@@ -322,9 +322,6 @@ public:
   // hash table, save all descriptors
   std::unordered_map<BTC_LOC, std::vector<BTC>> data_base_;
 
-  // save all key clouds, optional
-  std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr> key_cloud_vec_;
-
   // save all binary descriptors of key frame
   std::vector<std::vector<BinaryDescriptor>> history_binary_list_;
 

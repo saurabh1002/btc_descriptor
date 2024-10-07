@@ -1872,7 +1872,6 @@ int BtcDescManager::ProcessNewScan(const std::vector<Eigen::Vector3d> &pcl)
     this->SearchLoop(btc_vec);
   }
   this->AddSTDescs(btc_vec);
-  this->key_cloud_vec_.push_back((*current_cloud).makeShared());
   keyCloudInd++;
   return loop_match_ids_.size();
 }
