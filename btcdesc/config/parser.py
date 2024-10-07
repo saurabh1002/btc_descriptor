@@ -31,8 +31,6 @@ from pydantic import BaseModel
 
 
 class BTCDescConfig(BaseModel):
-    # for submap process
-    cloud_ds_size: float = 0.25
 
     # for binary descriptor
     useful_corner_num: int = 30
