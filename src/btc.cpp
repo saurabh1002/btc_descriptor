@@ -1,9 +1,23 @@
-#include "include/btc.h"
+#include "btc.h"
+
+#include <ceres/ceres.h>
+#include <ceres/rotation.h>
+
+#include <execution>
+#include <iostream>
+#include <mutex>
+#include <opencv2/opencv.hpp>
+#include <pcl/common/io.h>
+#include <pcl/kdtree/kdtree_flann.h>
+#include <string>
+#include <vector>
 
 void load_config_setting(std::string &config_file,
-                         ConfigSetting &config_setting) {
+                         ConfigSetting &config_setting)
+{
   cv::FileStorage fSettings(config_file, cv::FileStorage::READ);
-  if (!fSettings.isOpened()) {
+  if (!fSettings.isOpened())
+  {
     std::cerr << "Failed to open settings file at: " << config_file
               << std::endl;
     exit(-1);
@@ -35,6 +49,7 @@ void load_config_setting(std::string &config_file,
   // candidate search
   config_setting.skip_near_num_ = fSettings["skip_near_num"];
   config_setting.candidate_num_ = fSettings["candidate_num"];
+  config_setting.sub_frame_num_ = fSettings["sub_frame_num"];
   config_setting.rough_dis_threshold_ = fSettings["rough_dis_threshold"];
   config_setting.similarity_threshold_ = fSettings["similarity_threshold"];
   config_setting.icp_threshold_ = fSettings["icp_threshold"];
@@ -44,21 +59,39 @@ void load_config_setting(std::string &config_file,
   std::cout << "Sucessfully load config file:" << config_file << std::endl;
 }
 
-void down_sampling_voxel(pcl::PointCloud<pcl::PointXYZI> &pl_feat,
-                         double voxel_size) {
+pcl::PointCloud<pcl::PointXYZI>::Ptr EigenToPCL(const std::vector<Eigen::Vector3d> &pointcloud)
+{
+  pcl::PointCloud<pcl::PointXYZI>::Ptr pcl(new pcl::PointCloud<pcl::PointXYZI>());
+  for (const auto &point_eigen : pointcloud)
+  {
+    pcl::PointXYZI point_pcl;
+    point_pcl.x = point_eigen[0];
+    point_pcl.y = point_eigen[1];
+    point_pcl.z = point_eigen[2];
+    pcl->push_back(point_pcl);
+  }
+  return pcl;
+}
+
+void down_sampling_voxel(std::vector<Eigen::Vector3d> &pl_feat,
+                         double voxel_size)
+{
   int intensity = rand() % 255;
-  if (voxel_size < 0.01) {
+  if (voxel_size < 0.01)
+  {
     return;
   }
   std::unordered_map<VOXEL_LOC, M_POINT> voxel_map;
   uint plsize = pl_feat.size();
 
-  for (uint i = 0; i < plsize; i++) {
-    pcl::PointXYZI &p_c = pl_feat[i];
+  for (const Eigen::Vector3d &point : pl_feat)
+  {
     float loc_xyz[3];
-    for (int j = 0; j < 3; j++) {
-      loc_xyz[j] = p_c.data[j] / voxel_size;
-      if (loc_xyz[j] < 0) {
+    for (int j = 0; j < 3; j++)
+    {
+      loc_xyz[j] = point[j] / voxel_size;
+      if (loc_xyz[j] < 0)
+      {
         loc_xyz[j] -= 1.0;
       }
     }
@@ -66,18 +99,21 @@ void down_sampling_voxel(pcl::PointCloud<pcl::PointXYZI> &pl_feat,
     VOXEL_LOC position((int64_t)loc_xyz[0], (int64_t)loc_xyz[1],
                        (int64_t)loc_xyz[2]);
     auto iter = voxel_map.find(position);
-    if (iter != voxel_map.end()) {
-      iter->second.xyz[0] += p_c.x;
-      iter->second.xyz[1] += p_c.y;
-      iter->second.xyz[2] += p_c.z;
-      iter->second.intensity += p_c.intensity;
+    if (iter != voxel_map.end())
+    {
+      iter->second.xyz[0] += point.x();
+      iter->second.xyz[1] += point.y();
+      iter->second.xyz[2] += point.z();
+      iter->second.intensity += 0;
       iter->second.count++;
-    } else {
+    }
+    else
+    {
       M_POINT anp;
-      anp.xyz[0] = p_c.x;
-      anp.xyz[1] = p_c.y;
-      anp.xyz[2] = p_c.z;
-      anp.intensity = p_c.intensity;
+      anp.xyz[0] = point.x();
+      anp.xyz[1] = point.y();
+      anp.xyz[2] = point.z();
+      anp.intensity = 0;
       anp.count = 1;
       voxel_map[position] = anp;
     }
@@ -87,48 +123,57 @@ void down_sampling_voxel(pcl::PointCloud<pcl::PointXYZI> &pl_feat,
   pl_feat.resize(plsize);
 
   uint i = 0;
-  for (auto iter = voxel_map.begin(); iter != voxel_map.end(); ++iter) {
-    pl_feat[i].x = iter->second.xyz[0] / iter->second.count;
-    pl_feat[i].y = iter->second.xyz[1] / iter->second.count;
-    pl_feat[i].z = iter->second.xyz[2] / iter->second.count;
-    pl_feat[i].intensity = iter->second.intensity / iter->second.count;
+  for (auto iter = voxel_map.begin(); iter != voxel_map.end(); ++iter)
+  {
+    auto x = iter->second.xyz[0] / iter->second.count;
+    auto y = iter->second.xyz[1] / iter->second.count;
+    auto z = iter->second.xyz[2] / iter->second.count;
+    pl_feat[i] = Eigen::Vector3d(x, y, z);
     i++;
   }
 }
 double binary_similarity(const BinaryDescriptor &b1,
-                         const BinaryDescriptor &b2) {
+                         const BinaryDescriptor &b2)
+{
   double dis = 0;
-  for (size_t i = 0; i < b1.occupy_array_.size(); i++) {
+  for (size_t i = 0; i < b1.occupy_array_.size(); i++)
+  {
     // to be debug hanming distance
-    if (b1.occupy_array_[i] == true && b2.occupy_array_[i] == true) {
+    if (b1.occupy_array_[i] == true && b2.occupy_array_[i] == true)
+    {
       dis += 1;
     }
   }
   return 2 * dis / (b1.summary_ + b2.summary_);
 }
 
-bool binary_greater_sort(BinaryDescriptor a, BinaryDescriptor b) {
+bool binary_greater_sort(BinaryDescriptor a, BinaryDescriptor b)
+{
   return (a.summary_ > b.summary_);
 }
 
-bool plane_greater_sort(std::shared_ptr<Plane> plane1,
-                        std::shared_ptr<Plane> plane2) {
+bool plane_greater_sort(Plane *plane1, Plane *plane2)
+{
   return plane1->points_size_ > plane2->points_size_;
 }
 
-void OctoTree::init_octo_tree() {
-  if (voxel_points_.size() > config_setting_.voxel_init_num_) {
+void OctoTree::init_octo_tree()
+{
+  if (voxel_points_.size() > config_setting_.voxel_init_num_)
+  {
     init_plane();
   }
 }
 
-void OctoTree::init_plane() {
+void OctoTree::init_plane()
+{
   plane_ptr_->covariance_ = Eigen::Matrix3d::Zero();
   plane_ptr_->center_ = Eigen::Vector3d::Zero();
   plane_ptr_->normal_ = Eigen::Vector3d::Zero();
   plane_ptr_->points_size_ = voxel_points_.size();
   plane_ptr_->radius_ = 0;
-  for (auto pi : voxel_points_) {
+  for (auto pi : voxel_points_)
+  {
     plane_ptr_->covariance_ += pi * pi.transpose();
     plane_ptr_->center_ += pi;
   }
@@ -145,7 +190,8 @@ void OctoTree::init_plane() {
   evalsReal.rowwise().sum().minCoeff(&evalsMin);
   evalsReal.rowwise().sum().maxCoeff(&evalsMax);
   int evalsMid = 3 - evalsMin - evalsMax;
-  if (evalsReal(evalsMin) < config_setting_.plane_detection_thre_) {
+  if (evalsReal(evalsMin) < config_setting_.plane_detection_thre_)
+  {
     plane_ptr_->normal_ << evecs.real()(0, evalsMin), evecs.real()(1, evalsMin),
         evecs.real()(2, evalsMin);
     plane_ptr_->min_eigen_value_ = evalsReal(evalsMin);
@@ -161,391 +207,166 @@ void OctoTree::init_plane() {
     plane_ptr_->p_center_.normal_x = plane_ptr_->normal_(0);
     plane_ptr_->p_center_.normal_y = plane_ptr_->normal_(1);
     plane_ptr_->p_center_.normal_z = plane_ptr_->normal_(2);
-  } else {
+  }
+  else
+  {
     plane_ptr_->is_plane_ = false;
   }
 }
 
-void publish_binary(const std::vector<BinaryDescriptor> &binary_list,
-                    const Eigen::Vector3d &text_color,
-                    const std::string &text_ns,
-                    const ros::Publisher &text_publisher) {
-  visualization_msgs::MarkerArray text_array;
-  visualization_msgs::Marker text;
-  text.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
-  text.action = visualization_msgs::Marker::ADD;
-  text.ns = text_ns;
-  text.color.a = 0.8;  // Don't forget to set the alpha!
-  text.scale.z = 0.08;
-  text.pose.orientation.w = 1.0;
-  text.header.frame_id = "camera_init";
-  for (size_t i = 0; i < binary_list.size(); i++) {
-    text.pose.position.x = binary_list[i].location_[0];
-    text.pose.position.y = binary_list[i].location_[1];
-    text.pose.position.z = binary_list[i].location_[2];
-    std::ostringstream str;
-    str << std::to_string((int)(binary_list[i].summary_));
-    text.text = str.str();
-    text.scale.x = 0.5;
-    text.scale.y = 0.5;
-    text.scale.z = 0.5;
-    text.color.r = text_color[0];
-    text.color.g = text_color[1];
-    text.color.b = text_color[2];
-    text.color.a = 1;
-    text.id++;
-    text_array.markers.push_back(text);
-  }
-  for (int i = 1; i < 100; i++) {
-    text.color.a = 0;
-    text.id++;
-    text_array.markers.push_back(text);
-  }
-  text_publisher.publish(text_array);
-  return;
-}
-
-void publish_std_list(const std::vector<BTC> &btc_list,
-                      const ros::Publisher &std_publisher) {
-  // publish descriptor
-  visualization_msgs::MarkerArray ma_line;
-  visualization_msgs::Marker m_line;
-  m_line.type = visualization_msgs::Marker::LINE_LIST;
-  m_line.action = visualization_msgs::Marker::ADD;
-  m_line.ns = "std";
-  // Don't forget to set the alpha!
-  m_line.scale.x = 0.5;
-  m_line.pose.orientation.w = 1.0;
-  m_line.header.frame_id = "camera_init";
-  m_line.id = 0;
-  m_line.points.clear();
-  m_line.color.r = 0;
-  m_line.color.g = 1;
-  m_line.color.b = 0;
-  m_line.color.a = 1;
-  for (auto var : btc_list) {
-    geometry_msgs::Point p;
-    p.x = var.binary_A_.location_[0];
-    p.y = var.binary_A_.location_[1];
-    p.z = var.binary_A_.location_[2];
-    m_line.points.push_back(p);
-    p.x = var.binary_B_.location_[0];
-    p.y = var.binary_B_.location_[1];
-    p.z = var.binary_B_.location_[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-    p.x = var.binary_C_.location_[0];
-    p.y = var.binary_C_.location_[1];
-    p.z = var.binary_C_.location_[2];
-    m_line.points.push_back(p);
-    p.x = var.binary_B_.location_[0];
-    p.y = var.binary_B_.location_[1];
-    p.z = var.binary_B_.location_[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-    p.x = var.binary_C_.location_[0];
-    p.y = var.binary_C_.location_[1];
-    p.z = var.binary_C_.location_[2];
-    m_line.points.push_back(p);
-    p.x = var.binary_A_.location_[0];
-    p.y = var.binary_A_.location_[1];
-    p.z = var.binary_A_.location_[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-  }
-  for (int j = 0; j < 1000 * 3; j++) {
-    m_line.color.a = 0.00;
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-  }
-  std_publisher.publish(ma_line);
-  m_line.id = 0;
-  ma_line.markers.clear();
-}
-
-void publish_std(const std::vector<std::pair<BTC, BTC>> &match_std_list,
-                 const Eigen::Matrix4d &transform1,
-                 const Eigen::Matrix4d &transform2,
-                 const ros::Publisher &std_publisher) {
-  // publish descriptor
-  // bool transform_enable = true;
-  visualization_msgs::MarkerArray ma_line;
-  visualization_msgs::Marker m_line;
-  m_line.type = visualization_msgs::Marker::LINE_LIST;
-  m_line.action = visualization_msgs::Marker::ADD;
-  m_line.ns = "lines";
-  // Don't forget to set the alpha!
-  m_line.scale.x = 0.25;
-  m_line.pose.orientation.w = 1.0;
-  m_line.header.frame_id = "camera_init";
-  m_line.id = 0;
-  int max_pub_cnt = 1;
-  for (auto var : match_std_list) {
-    if (max_pub_cnt > 100) {
-      break;
-    }
-    max_pub_cnt++;
-    m_line.color.a = 0.8;
-    m_line.points.clear();
-    // m_line.color.r = 0 / 255;
-    // m_line.color.g = 233.0 / 255;
-    // m_line.color.b = 0 / 255;
-    m_line.color.r = 252.0 / 255;
-    m_line.color.g = 233.0 / 255;
-    m_line.color.b = 79.0 / 255;
-    geometry_msgs::Point p;
-    Eigen::Vector3d t_p;
-    t_p = var.second.binary_A_.location_;
-    t_p = transform2.block<3, 3>(0, 0) * t_p + transform2.block<3, 1>(0, 3);
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-
-    t_p = var.second.binary_B_.location_;
-    t_p = transform2.block<3, 3>(0, 0) * t_p + transform2.block<3, 1>(0, 3);
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-
-    t_p = var.second.binary_C_.location_;
-    t_p = transform2.block<3, 3>(0, 0) * t_p + transform2.block<3, 1>(0, 3);
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-
-    t_p = var.second.binary_B_.location_;
-    t_p = transform2.block<3, 3>(0, 0) * t_p + transform2.block<3, 1>(0, 3);
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-
-    t_p = var.second.binary_C_.location_;
-    t_p = transform2.block<3, 3>(0, 0) * t_p + transform2.block<3, 1>(0, 3);
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-
-    t_p = var.second.binary_A_.location_;
-    t_p = transform2.block<3, 3>(0, 0) * t_p + transform2.block<3, 1>(0, 3);
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-    // another
-    m_line.points.clear();
-    // 252; 233; 79
-
-    m_line.color.r = 1;
-    m_line.color.g = 1;
-    m_line.color.b = 1;
-    // m_line.color.r = 252.0 / 255;
-    // m_line.color.g = 233.0 / 255;
-    // m_line.color.b = 79.0 / 255;
-    t_p = var.first.binary_A_.location_;
-    t_p = transform1.block<3, 3>(0, 0) * t_p + transform1.block<3, 1>(0, 3);
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-
-    t_p = var.first.binary_B_.location_;
-    t_p = transform1.block<3, 3>(0, 0) * t_p + transform1.block<3, 1>(0, 3);
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-
-    t_p = var.first.binary_C_.location_;
-    t_p = transform1.block<3, 3>(0, 0) * t_p + transform1.block<3, 1>(0, 3);
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-    t_p = var.first.binary_B_.location_;
-    t_p = transform1.block<3, 3>(0, 0) * t_p + transform1.block<3, 1>(0, 3);
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-
-    t_p = var.first.binary_C_.location_;
-    t_p = transform1.block<3, 3>(0, 0) * t_p + transform1.block<3, 1>(0, 3);
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-    t_p = var.first.binary_A_.location_;
-    t_p = transform1.block<3, 3>(0, 0) * t_p + transform1.block<3, 1>(0, 3);
-    p.x = t_p[0];
-    p.y = t_p[1];
-    p.z = t_p[2];
-    m_line.points.push_back(p);
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-    m_line.points.clear();
-    // debug
-    // std_publisher.publish(ma_line);
-    // std::cout << "var first: " << var.first.triangle_.transpose()
-    //           << " , var second: " << var.second.triangle_.transpose()
-    //           << std::endl;
-    // getchar();
-  }
-  for (int j = 0; j < 100 * 6; j++) {
-    m_line.color.a = 0.00;
-    ma_line.markers.push_back(m_line);
-    m_line.id++;
-  }
-  std_publisher.publish(ma_line);
-  m_line.id = 0;
-  ma_line.markers.clear();
-}
-
 double calc_triangle_dis(
-    const std::vector<std::pair<BTC, BTC>> &match_std_list) {
+    const std::vector<std::pair<BTC, BTC>> &match_std_list)
+{
   double mean_triangle_dis = 0;
-  for (auto var : match_std_list) {
+  for (auto var : match_std_list)
+  {
     mean_triangle_dis += (var.first.triangle_ - var.second.triangle_).norm() /
                          var.first.triangle_.norm();
   }
-  if (match_std_list.size() > 0) {
+  if (match_std_list.size() > 0)
+  {
     mean_triangle_dis = mean_triangle_dis / match_std_list.size();
-  } else {
+  }
+  else
+  {
     mean_triangle_dis = -1;
   }
   return mean_triangle_dis;
 }
 
 double calc_binary_similaity(
-    const std::vector<std::pair<BTC, BTC>> &match_std_list) {
+    const std::vector<std::pair<BTC, BTC>> &match_std_list)
+{
   double mean_binary_similarity = 0;
-  for (auto var : match_std_list) {
+  for (auto var : match_std_list)
+  {
     mean_binary_similarity +=
         (binary_similarity(var.first.binary_A_, var.second.binary_A_) +
          binary_similarity(var.first.binary_B_, var.second.binary_B_) +
          binary_similarity(var.first.binary_C_, var.second.binary_C_)) /
         3;
   }
-  if (match_std_list.size() > 0) {
+  if (match_std_list.size() > 0)
+  {
     mean_binary_similarity = mean_binary_similarity / match_std_list.size();
-  } else {
+  }
+  else
+  {
     mean_binary_similarity = -1;
   }
   return mean_binary_similarity;
 }
 
-void CalcQuation(const Eigen::Vector3d &vec, const int axis,
-                 geometry_msgs::Quaternion &q) {
-  Eigen::Vector3d x_body = vec;
-  Eigen::Vector3d y_body(1, 1, 0);
-  if (x_body(2) != 0) {
-    y_body(2) = -(y_body(0) * x_body(0) + y_body(1) * x_body(1)) / x_body(2);
-  } else {
-    if (x_body(1) != 0) {
-      y_body(1) = -(y_body(0) * x_body(0)) / x_body(1);
-    } else {
-      y_body(0) = 0;
+double calc_overlap(const pcl::PointCloud<pcl::PointXYZI>::Ptr &cloud1,
+                    const pcl::PointCloud<pcl::PointXYZI>::Ptr &cloud2,
+                    double dis_threshold)
+{
+  int point_kip = 2;
+  double match_num = 0;
+  pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr kd_tree(
+      new pcl::KdTreeFLANN<pcl::PointXYZI>);
+  kd_tree->setInputCloud(cloud2);
+  std::vector<int> pointIdxNKNSearch(1);
+  std::vector<float> pointNKNSquaredDistance(1);
+  for (size_t i = 0; i < cloud1->size(); i += point_kip)
+  {
+    pcl::PointXYZI searchPoint = cloud1->points[i];
+    if (kd_tree->nearestKSearch(searchPoint, 1, pointIdxNKNSearch,
+                                pointNKNSquaredDistance) > 0)
+    {
+      if (pointNKNSquaredDistance[0] < dis_threshold * dis_threshold)
+      {
+        match_num++;
+      }
     }
   }
-  y_body.normalize();
-  Eigen::Vector3d z_body = x_body.cross(y_body);
-  Eigen::Matrix3d rot;
 
-  rot << x_body(0), x_body(1), x_body(2), y_body(0), y_body(1), y_body(2),
-      z_body(0), z_body(1), z_body(2);
-  Eigen::Matrix3d rotation = rot.transpose();
-  if (axis == 2) {
-    Eigen::Matrix3d rot_inc;
-    rot_inc << 0, 0, 1, 0, 1, 0, -1, 0, 0;
-    rotation = rotation * rot_inc;
+  double overlap =
+      2 * match_num * point_kip / (cloud1->size() + cloud2->size());
+  return overlap;
+}
+
+double calc_overlap(const pcl::PointCloud<pcl::PointXYZI>::Ptr &cloud1,
+                    const pcl::PointCloud<pcl::PointXYZI>::Ptr &cloud2,
+                    double dis_threshold, int skip_num)
+{
+  double match_num = 0;
+  pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr kd_tree(
+      new pcl::KdTreeFLANN<pcl::PointXYZI>);
+  kd_tree->setInputCloud(cloud2);
+  std::vector<int> pointIdxNKNSearch(1);
+  std::vector<float> pointNKNSquaredDistance(1);
+  for (size_t i = 0; i < cloud1->size(); i += skip_num)
+  {
+    pcl::PointXYZI searchPoint = cloud1->points[i];
+    if (kd_tree->nearestKSearch(searchPoint, 1, pointIdxNKNSearch,
+                                pointNKNSquaredDistance) > 0)
+    {
+      if (pointNKNSquaredDistance[0] < dis_threshold * dis_threshold)
+      {
+        match_num++;
+      }
+    }
   }
-  Eigen::Quaterniond eq(rotation);
-  q.w = eq.w();
-  q.x = eq.x();
-  q.y = eq.y();
-  q.z = eq.z();
+
+  double overlap =
+      (2 * match_num * skip_num) / (cloud1->size() + cloud2->size());
+  return overlap;
 }
 
-void pubPlane(const ros::Publisher &plane_pub, const std::string plane_ns,
-              const int plane_id, const pcl::PointXYZINormal normal_p,
-              const float radius, const Eigen::Vector3d rgb) {
-  visualization_msgs::Marker plane;
-  plane.header.frame_id = "camera_init";
-  plane.header.stamp = ros::Time();
-  plane.ns = plane_ns;
-  plane.id = plane_id;
-  plane.type = visualization_msgs::Marker::CUBE;
-  plane.action = visualization_msgs::Marker::ADD;
-  plane.pose.position.x = normal_p.x;
-  plane.pose.position.y = normal_p.y;
-  plane.pose.position.z = normal_p.z;
-  geometry_msgs::Quaternion q;
-  Eigen::Vector3d normal_vec(normal_p.normal_x, normal_p.normal_y,
-                             normal_p.normal_z);
-  CalcQuation(normal_vec, 2, q);
-  plane.pose.orientation = q;
-  plane.scale.x = 3.0 * radius;
-  plane.scale.y = 3.0 * radius;
-  plane.scale.z = 0.1;
-  plane.color.a = 0.8;  // 0.8
-  plane.color.r = fabs(rgb(0));
-  plane.color.g = fabs(rgb(1));
-  plane.color.b = fabs(rgb(2));
-  plane.lifetime = ros::Duration();
-  plane_pub.publish(plane);
+pcl::PointXYZI vec2point(const Eigen::Vector3d &vec)
+{
+  pcl::PointXYZI pi;
+  pi.x = vec[0];
+  pi.y = vec[1];
+  pi.z = vec[2];
+  return pi;
+}
+Eigen::Vector3d point2vec(const pcl::PointXYZI &pi)
+{
+  return Eigen::Vector3d(pi.x, pi.y, pi.z);
 }
 
-void BtcDescManager::GenerateBtcDescs(
-    const pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud, const int frame_id,
-    std::vector<BTC> &btcs_vec) {  // step1, voxelization and plane dection
+Eigen::Vector3d normal2vec(const pcl::PointXYZINormal &pi)
+{
+  Eigen::Vector3d vec(pi.normal_x, pi.normal_y, pi.normal_z);
+  return vec;
+}
+
+double time_inc(std::chrono::_V2::system_clock::time_point &t_end,
+                std::chrono::_V2::system_clock::time_point &t_begin)
+{
+  return std::chrono::duration_cast<std::chrono::duration<double>>(t_end -
+                                                                   t_begin)
+             .count() *
+         1000;
+}
+
+void BtcDescManager::GenerateSTDescs(
+    pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud,
+    std::vector<BTC> &btcs_vec)
+{ // step1, voxelization and plane dection
   std::unordered_map<VOXEL_LOC, OctoTree *> voxel_map;
   init_voxel_map(input_cloud, voxel_map);
   pcl::PointCloud<pcl::PointXYZINormal>::Ptr plane_cloud(
       new pcl::PointCloud<pcl::PointXYZINormal>);
   get_plane(voxel_map, plane_cloud);
-  if (print_debug_info_) {
-    std::cout << "[Description] planes size:" << plane_cloud->size()
-              << std::endl;
-  }
-
   plane_cloud_vec_.push_back(plane_cloud);
 
   // step3, extraction binary descriptors
-  std::vector<std::shared_ptr<Plane>> proj_plane_list;
-  std::vector<std::shared_ptr<Plane>> merge_plane_list;
+  std::vector<Plane *> proj_plane_list;
+  std::vector<Plane *> merge_plane_list;
   get_project_plane(voxel_map, proj_plane_list);
-  if (proj_plane_list.size() == 0) {
-    std::shared_ptr<Plane> single_plane(new Plane);
+  if (proj_plane_list.size() == 0)
+  {
+    Plane *single_plane = new Plane;
     single_plane->normal_ << 0, 0, 1;
     single_plane->center_ << input_cloud->points[0].x, input_cloud->points[0].y,
         input_cloud->points[0].z;
     merge_plane_list.push_back(single_plane);
-  } else {
+  }
+  else
+  {
     sort(proj_plane_list.begin(), proj_plane_list.end(), plane_greater_sort);
     merge_plane(proj_plane_list, merge_plane_list);
     sort(merge_plane_list.begin(), merge_plane_list.end(), plane_greater_sort);
@@ -554,31 +375,28 @@ void BtcDescManager::GenerateBtcDescs(
   binary_extractor(merge_plane_list, input_cloud, binary_list);
   history_binary_list_.push_back(binary_list);
   // corner_cloud_vec_.push_back(corner_points);
-  if (print_debug_info_) {
-    std::cout << "[Description] binary size:" << binary_list.size()
-              << std::endl;
-  }
 
   // step4, generate stable triangle descriptors
   btcs_vec.clear();
-  generate_btc(binary_list, frame_id, btcs_vec);
-  if (print_debug_info_) {
-    std::cout << "[Description] btcs size:" << btcs_vec.size() << std::endl;
-  }
+  generate_btc(binary_list, current_frame_id_, btcs_vec);
+
   // step5, clear memory
-  for (auto iter = voxel_map.begin(); iter != voxel_map.end(); iter++) {
+  for (auto iter = voxel_map.begin(); iter != voxel_map.end(); iter++)
+  {
     delete (iter->second);
   }
   return;
 }
 
-void BtcDescManager::SearchLoop(
-    const std::vector<BTC> &btcs_vec, std::pair<int, double> &loop_result,
-    std::pair<Eigen::Vector3d, Eigen::Matrix3d> &loop_transform,
-    std::vector<std::pair<BTC, BTC>> &loop_std_pair) {
-  if (btcs_vec.size() == 0) {
-    ROS_ERROR_STREAM("No STDescs!");
-    loop_result = std::pair<int, double>(-1, 0);
+void BtcDescManager::SearchLoop(const std::vector<BTC> &btcs_vec)
+{
+  loop_match_ids_.clear();
+  loop_match_scores_.clear();
+  loop_trs_.clear();
+  loop_rots_.clear();
+  if (btcs_vec.size() == 0)
+  {
+    std::cout << "No STDescs!\n";
     return;
   }
   // step1, select candidates, default number 50
@@ -588,67 +406,39 @@ void BtcDescManager::SearchLoop(
 
   auto t2 = std::chrono::high_resolution_clock::now();
   // step2, select best candidates from rough candidates
-  double best_score = 0;
-  int best_candidate_id = -1;
-  int triggle_candidate = -1;
-  std::pair<Eigen::Vector3d, Eigen::Matrix3d> best_transform;
-  std::vector<std::pair<BTC, BTC>> best_sucess_match_vec;
-  for (size_t i = 0; i < candidate_matcher_vec.size(); i++) {
+  for (size_t i = 0; i < candidate_matcher_vec.size(); i++)
+  {
     double verify_score = -1;
     std::pair<Eigen::Vector3d, Eigen::Matrix3d> relative_pose;
     std::vector<std::pair<BTC, BTC>> sucess_match_vec;
     candidate_verify(candidate_matcher_vec[i], verify_score, relative_pose,
                      sucess_match_vec);
-    if (print_debug_info_) {
-      std::cout << "[Retreival] try frame:"
-                << candidate_matcher_vec[i].match_id_.second << ", rough size:"
-                << candidate_matcher_vec[i].match_list_.size()
-                << ", score:" << verify_score << std::endl;
-    }
-
-    if (verify_score > best_score) {
-      best_score = verify_score;
-      best_candidate_id = candidate_matcher_vec[i].match_id_.second;
-      best_transform = relative_pose;
-      best_sucess_match_vec = sucess_match_vec;
-      triggle_candidate = i;
-      // std::cout << "[Retreival] best candidate:" << best_candidate_id
-      //           << ", score:" << best_score << std::endl;
-    }
+    loop_match_ids_.emplace_back(candidate_matcher_vec[i].match_id_.second);
+    loop_match_scores_.emplace_back(verify_score);
+    loop_rots_.emplace_back(relative_pose.second);
+    loop_trs_.emplace_back(relative_pose.first);
   }
   auto t3 = std::chrono::high_resolution_clock::now();
-
-  // std::cout << "[Time] candidate selector: " << time_inc(t2, t1)
-  //           << " ms, candidate verify: " << time_inc(t3, t2) << "ms"
-  //           << std::endl;
-  if (print_debug_info_) {
-    std::cout << "[Retreival] best candidate:" << best_candidate_id
-              << ", score:" << best_score << std::endl;
-  }
-
-  if (best_score > config_setting_.icp_threshold_) {
-    loop_result = std::pair<int, double>(best_candidate_id, best_score);
-    loop_transform = best_transform;
-    loop_std_pair = best_sucess_match_vec;
-    return;
-  } else {
-    loop_result = std::pair<int, double>(-1, 0);
-    return;
-  }
 }
 
-void BtcDescManager::AddBtcDescs(const std::vector<BTC> &btcs_vec) {
+void BtcDescManager::AddSTDescs(const std::vector<BTC> &btcs_vec)
+{
   // update frame id
-  for (auto single_std : btcs_vec) {
+  current_frame_id_++;
+  for (auto single_std : btcs_vec)
+  {
     // calculate the position of single std
     BTC_LOC position;
     position.x = (int)(single_std.triangle_[0] + 0.5);
     position.y = (int)(single_std.triangle_[1] + 0.5);
     position.z = (int)(single_std.triangle_[2] + 0.5);
     auto iter = data_base_.find(position);
-    if (iter != data_base_.end()) {
+    if (iter != data_base_.end())
+    {
       data_base_[position].push_back(single_std);
-    } else {
+    }
+    else
+    {
       std::vector<BTC> descriptor_vec;
       descriptor_vec.push_back(single_std);
       data_base_[position] = descriptor_vec;
@@ -660,12 +450,14 @@ void BtcDescManager::AddBtcDescs(const std::vector<BTC> &btcs_vec) {
 void BtcDescManager::PlaneGeomrtricIcp(
     const pcl::PointCloud<pcl::PointXYZINormal>::Ptr &source_cloud,
     const pcl::PointCloud<pcl::PointXYZINormal>::Ptr &target_cloud,
-    std::pair<Eigen::Vector3d, Eigen::Matrix3d> &transform) {
+    std::pair<Eigen::Vector3d, Eigen::Matrix3d> &transform)
+{
   pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr kd_tree(
       new pcl::KdTreeFLANN<pcl::PointXYZ>);
   pcl::PointCloud<pcl::PointXYZ>::Ptr input_cloud(
       new pcl::PointCloud<pcl::PointXYZ>);
-  for (size_t i = 0; i < target_cloud->size(); i++) {
+  for (size_t i = 0; i < target_cloud->size(); i++)
+  {
     pcl::PointXYZ pi;
     pi.x = target_cloud->points[i].x;
     pi.y = target_cloud->points[i].y;
@@ -688,7 +480,8 @@ void BtcDescManager::PlaneGeomrtricIcp(
   std::vector<int> pointIdxNKNSearch(1);
   std::vector<float> pointNKNSquaredDistance(1);
   int useful_match = 0;
-  for (size_t i = 0; i < source_cloud->size(); i++) {
+  for (size_t i = 0; i < source_cloud->size(); i++)
+  {
     pcl::PointXYZINormal searchPoint = source_cloud->points[i];
     Eigen::Vector3d pi(searchPoint.x, searchPoint.y, searchPoint.z);
     pi = rot * pi + t;
@@ -700,7 +493,8 @@ void BtcDescManager::PlaneGeomrtricIcp(
                        searchPoint.normal_z);
     ni = rot * ni;
     if (kd_tree->nearestKSearch(use_search_point, 1, pointIdxNKNSearch,
-                                pointNKNSquaredDistance) > 0) {
+                                pointNKNSquaredDistance) > 0)
+    {
       pcl::PointXYZINormal nearstPoint =
           target_cloud->points[pointIdxNKNSearch[0]];
       Eigen::Vector3d tpi(nearstPoint.x, nearstPoint.y, nearstPoint.z);
@@ -713,7 +507,8 @@ void BtcDescManager::PlaneGeomrtricIcp(
       if ((normal_inc.norm() < config_setting_.normal_threshold_ ||
            normal_add.norm() < config_setting_.normal_threshold_) &&
           point_to_plane < config_setting_.dis_threshold_ &&
-          point_to_point_dis < 3) {
+          point_to_point_dis < 3)
+      {
         useful_match++;
         ceres::CostFunction *cost_function;
         Eigen::Vector3d curr_point(source_cloud->points[i].x,
@@ -743,24 +538,31 @@ void BtcDescManager::PlaneGeomrtricIcp(
 
 void BtcDescManager::init_voxel_map(
     const pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud,
-    std::unordered_map<VOXEL_LOC, OctoTree *> &voxel_map) {
+    std::unordered_map<VOXEL_LOC, OctoTree *> &voxel_map)
+{
   uint plsize = input_cloud->size();
-  for (uint i = 0; i < plsize; i++) {
+  for (uint i = 0; i < plsize; i++)
+  {
     Eigen::Vector3d p_c(input_cloud->points[i].x, input_cloud->points[i].y,
                         input_cloud->points[i].z);
     double loc_xyz[3];
-    for (int j = 0; j < 3; j++) {
+    for (int j = 0; j < 3; j++)
+    {
       loc_xyz[j] = p_c[j] / config_setting_.voxel_size_;
-      if (loc_xyz[j] < 0) {
+      if (loc_xyz[j] < 0)
+      {
         loc_xyz[j] -= 1.0;
       }
     }
     VOXEL_LOC position((int64_t)loc_xyz[0], (int64_t)loc_xyz[1],
                        (int64_t)loc_xyz[2]);
     auto iter = voxel_map.find(position);
-    if (iter != voxel_map.end()) {
+    if (iter != voxel_map.end())
+    {
       voxel_map[position]->voxel_points_.push_back(p_c);
-    } else {
+    }
+    else
+    {
       OctoTree *octo_tree = new OctoTree(config_setting_);
       voxel_map[position] = octo_tree;
       voxel_map[position]->voxel_points_.push_back(p_c);
@@ -769,7 +571,8 @@ void BtcDescManager::init_voxel_map(
   std::vector<std::unordered_map<VOXEL_LOC, OctoTree *>::iterator> iter_list;
   std::vector<size_t> index;
   size_t i = 0;
-  for (auto iter = voxel_map.begin(); iter != voxel_map.end(); ++iter) {
+  for (auto iter = voxel_map.begin(); iter != voxel_map.end(); ++iter)
+  {
     index.push_back(i);
     i++;
     iter_list.push_back(iter);
@@ -777,14 +580,18 @@ void BtcDescManager::init_voxel_map(
   }
   std::for_each(
       std::execution::par_unseq, index.begin(), index.end(),
-      [&](const size_t &i) { iter_list[i]->second->init_octo_tree(); });
+      [&](const size_t &i)
+      { iter_list[i]->second->init_octo_tree(); });
 }
 
 void BtcDescManager::get_plane(
     const std::unordered_map<VOXEL_LOC, OctoTree *> &voxel_map,
-    pcl::PointCloud<pcl::PointXYZINormal>::Ptr &plane_cloud) {
-  for (auto iter = voxel_map.begin(); iter != voxel_map.end(); iter++) {
-    if (iter->second->plane_ptr_->is_plane_) {
+    pcl::PointCloud<pcl::PointXYZINormal>::Ptr &plane_cloud)
+{
+  for (auto iter = voxel_map.begin(); iter != voxel_map.end(); iter++)
+  {
+    if (iter->second->plane_ptr_->is_plane_)
+    {
       pcl::PointXYZINormal pi;
       pi.x = iter->second->plane_ptr_->center_[0];
       pi.y = iter->second->plane_ptr_->center_[1];
@@ -799,17 +606,23 @@ void BtcDescManager::get_plane(
 
 void BtcDescManager::get_project_plane(
     std::unordered_map<VOXEL_LOC, OctoTree *> &voxel_map,
-    std::vector<std::shared_ptr<Plane>> &project_plane_list) {
-  std::vector<std::shared_ptr<Plane>> origin_list;
-  for (auto iter = voxel_map.begin(); iter != voxel_map.end(); iter++) {
-    if (iter->second->plane_ptr_->is_plane_) {
+    std::vector<Plane *> &project_plane_list)
+{
+  std::vector<Plane *> origin_list;
+  for (auto iter = voxel_map.begin(); iter != voxel_map.end(); iter++)
+  {
+    if (iter->second->plane_ptr_->is_plane_)
+    {
       origin_list.push_back(iter->second->plane_ptr_);
     }
   }
-  for (size_t i = 0; i < origin_list.size(); i++) origin_list[i]->id_ = 0;
+  for (size_t i = 0; i < origin_list.size(); i++)
+    origin_list[i]->id_ = 0;
   int current_id = 1;
-  for (auto iter = origin_list.end() - 1; iter != origin_list.begin(); iter--) {
-    for (auto iter2 = origin_list.begin(); iter2 != iter; iter2++) {
+  for (auto iter = origin_list.end() - 1; iter != origin_list.begin(); iter--)
+  {
+    for (auto iter2 = origin_list.begin(); iter2 != iter; iter2++)
+    {
       Eigen::Vector3d normal_diff = (*iter)->normal_ - (*iter2)->normal_;
       Eigen::Vector3d normal_add = (*iter)->normal_ + (*iter2)->normal_;
       double dis1 =
@@ -823,34 +636,43 @@ void BtcDescManager::get_project_plane(
       if (normal_diff.norm() < config_setting_.plane_merge_normal_thre_ ||
           normal_add.norm() < config_setting_.plane_merge_normal_thre_)
         if (dis1 < config_setting_.plane_merge_dis_thre_ &&
-            dis2 < config_setting_.plane_merge_dis_thre_) {
-          if ((*iter)->id_ == 0 && (*iter2)->id_ == 0) {
+            dis2 < config_setting_.plane_merge_dis_thre_)
+        {
+          if ((*iter)->id_ == 0 && (*iter2)->id_ == 0)
+          {
             (*iter)->id_ = current_id;
             (*iter2)->id_ = current_id;
             current_id++;
-          } else if ((*iter)->id_ == 0 && (*iter2)->id_ != 0)
+          }
+          else if ((*iter)->id_ == 0 && (*iter2)->id_ != 0)
             (*iter)->id_ = (*iter2)->id_;
           else if ((*iter)->id_ != 0 && (*iter2)->id_ == 0)
             (*iter2)->id_ = (*iter)->id_;
         }
     }
   }
-  std::vector<std::shared_ptr<Plane>> merge_list;
+  std::vector<Plane *> merge_list;
   std::vector<int> merge_flag;
 
-  for (size_t i = 0; i < origin_list.size(); i++) {
+  for (size_t i = 0; i < origin_list.size(); i++)
+  {
     auto it =
         std::find(merge_flag.begin(), merge_flag.end(), origin_list[i]->id_);
-    if (it != merge_flag.end()) continue;
-    if (origin_list[i]->id_ == 0) {
+    if (it != merge_flag.end())
+      continue;
+    if (origin_list[i]->id_ == 0)
+    {
       continue;
     }
-    std::shared_ptr<Plane> merge_plane(new Plane);
+    Plane *merge_plane = new Plane;
     (*merge_plane) = (*origin_list[i]);
     bool is_merge = false;
-    for (size_t j = 0; j < origin_list.size(); j++) {
-      if (i == j) continue;
-      if (origin_list[j]->id_ == origin_list[i]->id_) {
+    for (size_t j = 0; j < origin_list.size(); j++)
+    {
+      if (i == j)
+        continue;
+      if (origin_list[j]->id_ == origin_list[i]->id_)
+      {
         is_merge = true;
         Eigen::Matrix3d P_PT1 =
             (merge_plane->covariance_ +
@@ -899,7 +721,8 @@ void BtcDescManager::get_project_plane(
         merge_plane->p_center_.normal_z = merge_plane->normal_(2);
       }
     }
-    if (is_merge) {
+    if (is_merge)
+    {
       merge_flag.push_back(merge_plane->id_);
       merge_list.push_back(merge_plane);
     }
@@ -907,17 +730,21 @@ void BtcDescManager::get_project_plane(
   project_plane_list = merge_list;
 }
 
-void BtcDescManager::merge_plane(
-    std::vector<std::shared_ptr<Plane>> &origin_list,
-    std::vector<std::shared_ptr<Plane>> &merge_plane_list) {
-  if (origin_list.size() == 1) {
+void BtcDescManager::merge_plane(std::vector<Plane *> &origin_list,
+                                 std::vector<Plane *> &merge_plane_list)
+{
+  if (origin_list.size() == 1)
+  {
     merge_plane_list = origin_list;
     return;
   }
-  for (size_t i = 0; i < origin_list.size(); i++) origin_list[i]->id_ = 0;
+  for (size_t i = 0; i < origin_list.size(); i++)
+    origin_list[i]->id_ = 0;
   int current_id = 1;
-  for (auto iter = origin_list.end() - 1; iter != origin_list.begin(); iter--) {
-    for (auto iter2 = origin_list.begin(); iter2 != iter; iter2++) {
+  for (auto iter = origin_list.end() - 1; iter != origin_list.begin(); iter--)
+  {
+    for (auto iter2 = origin_list.begin(); iter2 != iter; iter2++)
+    {
       Eigen::Vector3d normal_diff = (*iter)->normal_ - (*iter2)->normal_;
       Eigen::Vector3d normal_add = (*iter)->normal_ + (*iter2)->normal_;
       double dis1 =
@@ -931,12 +758,15 @@ void BtcDescManager::merge_plane(
       if (normal_diff.norm() < config_setting_.plane_merge_normal_thre_ ||
           normal_add.norm() < config_setting_.plane_merge_normal_thre_)
         if (dis1 < config_setting_.plane_merge_dis_thre_ &&
-            dis2 < config_setting_.plane_merge_dis_thre_) {
-          if ((*iter)->id_ == 0 && (*iter2)->id_ == 0) {
+            dis2 < config_setting_.plane_merge_dis_thre_)
+        {
+          if ((*iter)->id_ == 0 && (*iter2)->id_ == 0)
+          {
             (*iter)->id_ = current_id;
             (*iter2)->id_ = current_id;
             current_id++;
-          } else if ((*iter)->id_ == 0 && (*iter2)->id_ != 0)
+          }
+          else if ((*iter)->id_ == 0 && (*iter2)->id_ != 0)
             (*iter)->id_ = (*iter2)->id_;
           else if ((*iter)->id_ != 0 && (*iter2)->id_ == 0)
             (*iter2)->id_ = (*iter)->id_;
@@ -945,20 +775,26 @@ void BtcDescManager::merge_plane(
   }
   std::vector<int> merge_flag;
 
-  for (size_t i = 0; i < origin_list.size(); i++) {
+  for (size_t i = 0; i < origin_list.size(); i++)
+  {
     auto it =
         std::find(merge_flag.begin(), merge_flag.end(), origin_list[i]->id_);
-    if (it != merge_flag.end()) continue;
-    if (origin_list[i]->id_ == 0) {
+    if (it != merge_flag.end())
+      continue;
+    if (origin_list[i]->id_ == 0)
+    {
       merge_plane_list.push_back(origin_list[i]);
       continue;
     }
-    std::shared_ptr<Plane> merge_plane(new Plane);
+    Plane *merge_plane = new Plane;
     (*merge_plane) = (*origin_list[i]);
     bool is_merge = false;
-    for (size_t j = 0; j < origin_list.size(); j++) {
-      if (i == j) continue;
-      if (origin_list[j]->id_ == origin_list[i]->id_) {
+    for (size_t j = 0; j < origin_list.size(); j++)
+    {
+      if (i == j)
+        continue;
+      if (origin_list[j]->id_ == origin_list[i]->id_)
+      {
         is_merge = true;
         Eigen::Matrix3d P_PT1 =
             (merge_plane->covariance_ +
@@ -1007,7 +843,8 @@ void BtcDescManager::merge_plane(
         merge_plane->p_center_.normal_z = merge_plane->normal_(2);
       }
     }
-    if (is_merge) {
+    if (is_merge)
+    {
       merge_flag.push_back(merge_plane->id_);
       merge_plane_list.push_back(merge_plane);
     }
@@ -1015,55 +852,58 @@ void BtcDescManager::merge_plane(
 }
 
 void BtcDescManager::binary_extractor(
-    const std::vector<std::shared_ptr<Plane>> proj_plane_list,
+    const std::vector<Plane *> proj_plane_list,
     const pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud,
-    std::vector<BinaryDescriptor> &binary_descriptor_list) {
+    std::vector<BinaryDescriptor> &binary_descriptor_list)
+{
   binary_descriptor_list.clear();
   std::vector<BinaryDescriptor> temp_binary_list;
   Eigen::Vector3d last_normal(0, 0, 0);
   int useful_proj_num = 0;
-  for (int i = 0; i < proj_plane_list.size(); i++) {
+  for (int i = 0; i < proj_plane_list.size(); i++)
+  {
     std::vector<BinaryDescriptor> prepare_binary_list;
     Eigen::Vector3d proj_center = proj_plane_list[i]->center_;
     Eigen::Vector3d proj_normal = proj_plane_list[i]->normal_;
-    if (proj_normal.z() < 0) {
-      proj_normal = -proj_normal;
-    }
     if ((proj_normal - last_normal).norm() < 0.3 ||
-        (proj_normal + last_normal).norm() > 0.3) {
+        (proj_normal + last_normal).norm() > 0.3)
+    {
       last_normal = proj_normal;
-      std::cout << "[Description] reference plane normal:"
-                << proj_normal.transpose()
-                << ", center:" << proj_center.transpose() << std::endl;
       useful_proj_num++;
       extract_binary(proj_center, proj_normal, input_cloud,
                      prepare_binary_list);
-      for (auto bi : prepare_binary_list) {
+      for (auto bi : prepare_binary_list)
+      {
         temp_binary_list.push_back(bi);
       }
-      if (useful_proj_num == config_setting_.proj_plane_num_) {
+      if (useful_proj_num == config_setting_.proj_plane_num_)
+      {
         break;
       }
     }
   }
   non_maxi_suppression(temp_binary_list);
-  if (config_setting_.useful_corner_num_ > temp_binary_list.size()) {
+  if (config_setting_.useful_corner_num_ > temp_binary_list.size())
+  {
     binary_descriptor_list = temp_binary_list;
-  } else {
+  }
+  else
+  {
     std::sort(temp_binary_list.begin(), temp_binary_list.end(),
               binary_greater_sort);
-    for (size_t i = 0; i < config_setting_.useful_corner_num_; i++) {
+    for (size_t i = 0; i < config_setting_.useful_corner_num_; i++)
+    {
       binary_descriptor_list.push_back(temp_binary_list[i]);
     }
   }
   return;
 }
-
 void BtcDescManager::extract_binary(
     const Eigen::Vector3d &project_center,
     const Eigen::Vector3d &project_normal,
     const pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud,
-    std::vector<BinaryDescriptor> &binary_list) {
+    std::vector<BinaryDescriptor> &binary_list)
+{
   binary_list.clear();
   double binary_min_dis = config_setting_.summary_min_thre_;
   double resolution = config_setting_.proj_image_resolution_;
@@ -1079,11 +919,16 @@ void BtcDescManager::extract_binary(
   std::vector<Eigen::Vector3d> projection_points;
   // Eigen::Vector3d x_axis(1, 1, 0);
   Eigen::Vector3d x_axis(1, 0, 0);
-  if (C != 0) {
+  if (C != 0)
+  {
     x_axis[2] = -(A + B) / C;
-  } else if (B != 0) {
+  }
+  else if (B != 0)
+  {
     x_axis[1] = -A / B;
-  } else {
+  }
+  else
+  {
     x_axis[0] = 0;
     x_axis[1] = 1;
   }
@@ -1103,16 +948,21 @@ void BtcDescManager::extract_binary(
   std::vector<Eigen::Vector2d> point_list_2d;
   pcl::PointCloud<pcl::PointXYZ> point_list_3d;
   std::vector<double> dis_list_2d;
-  for (size_t i = 0; i < input_cloud->size(); i++) {
+  for (size_t i = 0; i < input_cloud->size(); i++)
+  {
     double x = input_cloud->points[i].x;
     double y = input_cloud->points[i].y;
     double z = input_cloud->points[i].z;
-    double dis = x * A + y * B + z * C + D;
+    double dis = fabs(x * A + y * B + z * C + D);
     pcl::PointXYZ pi;
-    if (dis < dis_threshold_min || dis > dis_threshold_max) {
+    if (dis < dis_threshold_min || dis > dis_threshold_max)
+    {
       continue;
-    } else {
-      if (dis > dis_threshold_min && dis <= dis_threshold_max) {
+    }
+    else
+    {
+      if (dis > dis_threshold_min && dis <= dis_threshold_max)
+      {
         pi.x = x;
         pi.y = y;
         pi.z = z;
@@ -1143,20 +993,26 @@ void BtcDescManager::extract_binary(
   double max_x = -10;
   double min_y = 10;
   double max_y = -10;
-  if (point_list_2d.size() <= 5) {
+  if (point_list_2d.size() <= 5)
+  {
     return;
   }
-  for (auto pi : point_list_2d) {
-    if (pi[0] < min_x) {
+  for (auto pi : point_list_2d)
+  {
+    if (pi[0] < min_x)
+    {
       min_x = pi[0];
     }
-    if (pi[0] > max_x) {
+    if (pi[0] > max_x)
+    {
       max_x = pi[0];
     }
-    if (pi[1] < min_y) {
+    if (pi[1] < min_y)
+    {
       min_y = pi[1];
     }
-    if (pi[1] > max_y) {
+    if (pi[1] > max_y)
+    {
       max_y = pi[1];
     }
   }
@@ -1170,28 +1026,35 @@ void BtcDescManager::extract_binary(
 
   std::vector<double> **dis_container = new std::vector<double> *[x_axis_len];
   BinaryDescriptor **binary_container = new BinaryDescriptor *[x_axis_len];
-  for (int i = 0; i < x_axis_len; i++) {
+  for (int i = 0; i < x_axis_len; i++)
+  {
     dis_container[i] = new std::vector<double>[y_axis_len];
     binary_container[i] = new BinaryDescriptor[y_axis_len];
   }
   double **img_count = new double *[x_axis_len];
-  for (int i = 0; i < x_axis_len; i++) {
+  for (int i = 0; i < x_axis_len; i++)
+  {
     img_count[i] = new double[y_axis_len];
   }
   double **dis_array = new double *[x_axis_len];
-  for (int i = 0; i < x_axis_len; i++) {
+  for (int i = 0; i < x_axis_len; i++)
+  {
     dis_array[i] = new double[y_axis_len];
   }
   double **mean_x_list = new double *[x_axis_len];
-  for (int i = 0; i < x_axis_len; i++) {
+  for (int i = 0; i < x_axis_len; i++)
+  {
     mean_x_list[i] = new double[y_axis_len];
   }
   double **mean_y_list = new double *[x_axis_len];
-  for (int i = 0; i < x_axis_len; i++) {
+  for (int i = 0; i < x_axis_len; i++)
+  {
     mean_y_list[i] = new double[y_axis_len];
   }
-  for (int x = 0; x < x_axis_len; x++) {
-    for (int y = 0; y < y_axis_len; y++) {
+  for (int x = 0; x < x_axis_len; x++)
+  {
+    for (int y = 0; y < y_axis_len; y++)
+    {
       img_count[x][y] = 0;
       mean_x_list[x][y] = 0;
       mean_y_list[x][y] = 0;
@@ -1201,7 +1064,8 @@ void BtcDescManager::extract_binary(
     }
   }
 
-  for (size_t i = 0; i < point_list_2d.size(); i++) {
+  for (size_t i = 0; i < point_list_2d.size(); i++)
+  {
     int x_index = (int)((point_list_2d[i][0] - min_x) / resolution);
     int y_index = (int)((point_list_2d[i][1] - min_y) / resolution);
     mean_x_list[x_index][y_index] += point_list_2d[i][0];
@@ -1210,26 +1074,33 @@ void BtcDescManager::extract_binary(
     dis_container[x_index][y_index].push_back(dis_list_2d[i]);
   }
 
-  for (int x = 0; x < x_axis_len; x++) {
-    for (int y = 0; y < y_axis_len; y++) {
+  for (int x = 0; x < x_axis_len; x++)
+  {
+    for (int y = 0; y < y_axis_len; y++)
+    {
       // calc segment dis array
-      if (img_count[x][y] > 0) {
+      if (img_count[x][y] > 0)
+      {
         int cut_num = (dis_threshold_max - dis_threshold_min) / high_inc;
         std::vector<bool> occup_list;
         std::vector<double> cnt_list;
         BinaryDescriptor single_binary;
-        for (size_t i = 0; i < cut_num; i++) {
+        for (size_t i = 0; i < cut_num; i++)
+        {
           cnt_list.push_back(0);
           occup_list.push_back(false);
         }
-        for (size_t j = 0; j < dis_container[x][y].size(); j++) {
+        for (size_t j = 0; j < dis_container[x][y].size(); j++)
+        {
           int cnt_index =
               (dis_container[x][y][j] - dis_threshold_min) / high_inc;
           cnt_list[cnt_index]++;
         }
         double segmnt_dis = 0;
-        for (size_t i = 0; i < cut_num; i++) {
-          if (cnt_list[i] >= 1) {
+        for (size_t i = 0; i < cut_num; i++)
+        {
+          if (cnt_list[i] >= 1)
+          {
             segmnt_dis++;
             occup_list[i] = true;
           }
@@ -1248,24 +1119,30 @@ void BtcDescManager::extract_binary(
   std::vector<int> max_dis_y_index_list;
 
   for (int x_segment_index = 0; x_segment_index < x_segment_num;
-       x_segment_index++) {
+       x_segment_index++)
+  {
     for (int y_segment_index = 0; y_segment_index < y_segment_num;
-         y_segment_index++) {
+         y_segment_index++)
+    {
       double max_dis = 0;
       int max_dis_x_index = -10;
       int max_dis_y_index = -10;
       for (int x_index = x_segment_index * segmen_base_num;
-           x_index < (x_segment_index + 1) * segmen_base_num; x_index++) {
+           x_index < (x_segment_index + 1) * segmen_base_num; x_index++)
+      {
         for (int y_index = y_segment_index * segmen_base_num;
-             y_index < (y_segment_index + 1) * segmen_base_num; y_index++) {
-          if (dis_array[x_index][y_index] > max_dis) {
+             y_index < (y_segment_index + 1) * segmen_base_num; y_index++)
+        {
+          if (dis_array[x_index][y_index] > max_dis)
+          {
             max_dis = dis_array[x_index][y_index];
             max_dis_x_index = x_index;
             max_dis_y_index = y_index;
           }
         }
       }
-      if (max_dis >= binary_min_dis) {
+      if (max_dis >= binary_min_dis)
+      {
         max_dis_list.push_back(max_dis);
         max_dis_x_index_list.push_back(max_dis_x_index);
         max_dis_y_index_list.push_back(max_dis_y_index);
@@ -1282,47 +1159,61 @@ void BtcDescManager::extract_binary(
   direction_list.push_back(d);
   d << 1, -1;
   direction_list.push_back(d);
-  for (size_t i = 0; i < max_dis_list.size(); i++) {
+  for (size_t i = 0; i < max_dis_list.size(); i++)
+  {
     Eigen::Vector2i p(max_dis_x_index_list[i], max_dis_y_index_list[i]);
     if (p[0] <= 0 || p[0] >= x_axis_len - 1 || p[1] <= 0 ||
-        p[1] >= y_axis_len - 1) {
+        p[1] >= y_axis_len - 1)
+    {
       continue;
     }
     bool is_add = true;
 
-    if (line_filter_enable) {
-      for (int j = 0; j < 4; j++) {
+    if (line_filter_enable)
+    {
+      for (int j = 0; j < 4; j++)
+      {
         Eigen::Vector2i p(max_dis_x_index_list[i], max_dis_y_index_list[i]);
         if (p[0] <= 0 || p[0] >= x_axis_len - 1 || p[1] <= 0 ||
-            p[1] >= y_axis_len - 1) {
+            p[1] >= y_axis_len - 1)
+        {
           continue;
         }
         Eigen::Vector2i p1 = p + direction_list[j];
         Eigen::Vector2i p2 = p - direction_list[j];
         double threshold = dis_array[p[0]][p[1]] - 3;
-        if (dis_array[p1[0]][p1[1]] >= threshold) {
-          if (dis_array[p2[0]][p2[1]] >= 0.5 * dis_array[p[0]][p[1]]) {
+        if (dis_array[p1[0]][p1[1]] >= threshold)
+        {
+          if (dis_array[p2[0]][p2[1]] >= 0.5 * dis_array[p[0]][p[1]])
+          {
             is_add = false;
           }
         }
-        if (dis_array[p2[0]][p2[1]] >= threshold) {
-          if (dis_array[p1[0]][p1[1]] >= 0.5 * dis_array[p[0]][p[1]]) {
+        if (dis_array[p2[0]][p2[1]] >= threshold)
+        {
+          if (dis_array[p1[0]][p1[1]] >= 0.5 * dis_array[p[0]][p[1]])
+          {
             is_add = false;
           }
         }
-        if (dis_array[p1[0]][p1[1]] >= threshold) {
-          if (dis_array[p2[0]][p2[1]] >= threshold) {
+        if (dis_array[p1[0]][p1[1]] >= threshold)
+        {
+          if (dis_array[p2[0]][p2[1]] >= threshold)
+          {
             is_add = false;
           }
         }
-        if (dis_array[p2[0]][p2[1]] >= threshold) {
-          if (dis_array[p1[0]][p1[1]] >= threshold) {
+        if (dis_array[p2[0]][p2[1]] >= threshold)
+        {
+          if (dis_array[p1[0]][p1[1]] >= threshold)
+          {
             is_add = false;
           }
         }
       }
     }
-    if (is_add) {
+    if (is_add)
+    {
       double px =
           mean_x_list[max_dis_x_index_list[i]][max_dis_y_index_list[i]] /
           img_count[max_dis_x_index_list[i]][max_dis_y_index_list[i]];
@@ -1340,7 +1231,8 @@ void BtcDescManager::extract_binary(
       binary_list.push_back(single_binary);
     }
   }
-  for (int i = 0; i < x_axis_len; i++) {
+  for (int i = 0; i < x_axis_len; i++)
+  {
     delete[] binary_container[i];
     delete[] dis_container[i];
     delete[] img_count[i];
@@ -1357,13 +1249,15 @@ void BtcDescManager::extract_binary(
 }
 
 void BtcDescManager::non_maxi_suppression(
-    std::vector<BinaryDescriptor> &binary_list) {
+    std::vector<BinaryDescriptor> &binary_list)
+{
   pcl::PointCloud<pcl::PointXYZ>::Ptr prepare_key_cloud(
       new pcl::PointCloud<pcl::PointXYZ>);
   pcl::KdTreeFLANN<pcl::PointXYZ> kd_tree;
   std::vector<int> pre_count_list;
   std::vector<bool> is_add_list;
-  for (auto var : binary_list) {
+  for (auto var : binary_list)
+  {
     pcl::PointXYZ pi;
     pi.x = var.location_[0];
     pi.y = var.location_[1];
@@ -1376,33 +1270,41 @@ void BtcDescManager::non_maxi_suppression(
   std::vector<int> pointIdxRadiusSearch;
   std::vector<float> pointRadiusSquaredDistance;
   double radius = config_setting_.non_max_suppression_radius_;
-  for (size_t i = 0; i < prepare_key_cloud->size(); i++) {
+  for (size_t i = 0; i < prepare_key_cloud->size(); i++)
+  {
     pcl::PointXYZ searchPoint = prepare_key_cloud->points[i];
     if (kd_tree.radiusSearch(searchPoint, radius, pointIdxRadiusSearch,
-                             pointRadiusSquaredDistance) > 0) {
+                             pointRadiusSquaredDistance) > 0)
+    {
       Eigen::Vector3d pi(searchPoint.x, searchPoint.y, searchPoint.z);
-      for (size_t j = 0; j < pointIdxRadiusSearch.size(); ++j) {
+      for (size_t j = 0; j < pointIdxRadiusSearch.size(); ++j)
+      {
         Eigen::Vector3d pj(
             prepare_key_cloud->points[pointIdxRadiusSearch[j]].x,
             prepare_key_cloud->points[pointIdxRadiusSearch[j]].y,
             prepare_key_cloud->points[pointIdxRadiusSearch[j]].z);
-        if (pointIdxRadiusSearch[j] == i) {
+        if (pointIdxRadiusSearch[j] == i)
+        {
           continue;
         }
-        if (pre_count_list[i] <= pre_count_list[pointIdxRadiusSearch[j]]) {
+        if (pre_count_list[i] <= pre_count_list[pointIdxRadiusSearch[j]])
+        {
           is_add_list[i] = false;
         }
       }
     }
   }
   std::vector<BinaryDescriptor> pass_binary_list;
-  for (size_t i = 0; i < is_add_list.size(); i++) {
-    if (is_add_list[i]) {
+  for (size_t i = 0; i < is_add_list.size(); i++)
+  {
+    if (is_add_list[i])
+    {
       pass_binary_list.push_back(binary_list[i]);
     }
   }
   binary_list.clear();
-  for (auto var : pass_binary_list) {
+  for (auto var : pass_binary_list)
+  {
     binary_list.push_back(var);
   }
   return;
@@ -1410,11 +1312,13 @@ void BtcDescManager::non_maxi_suppression(
 
 void BtcDescManager::generate_btc(
     const std::vector<BinaryDescriptor> &binary_list, const int &frame_id,
-    std::vector<BTC> &btc_list) {
+    std::vector<BTC> &btc_list)
+{
   double scale = 1.0 / config_setting_.std_side_resolution_;
   std::unordered_map<VOXEL_LOC, bool> feat_map;
   pcl::PointCloud<pcl::PointXYZ> key_cloud;
-  for (auto var : binary_list) {
+  for (auto var : binary_list)
+  {
     pcl::PointXYZ pi;
     pi.x = var.location_[0];
     pi.y = var.location_[1];
@@ -1427,12 +1331,16 @@ void BtcDescManager::generate_btc(
   int K = config_setting_.descriptor_near_num_;
   std::vector<int> pointIdxNKNSearch(K);
   std::vector<float> pointNKNSquaredDistance(K);
-  for (size_t i = 0; i < key_cloud.size(); i++) {
+  for (size_t i = 0; i < key_cloud.size(); i++)
+  {
     pcl::PointXYZ searchPoint = key_cloud.points[i];
     if (kd_tree->nearestKSearch(searchPoint, K, pointIdxNKNSearch,
-                                pointNKNSquaredDistance) > 0) {
-      for (int m = 1; m < K - 1; m++) {
-        for (int n = m + 1; n < K; n++) {
+                                pointNKNSquaredDistance) > 0)
+    {
+      for (int m = 1; m < K - 1; m++)
+      {
+        for (int n = m + 1; n < K; n++)
+        {
           pcl::PointXYZ p1 = searchPoint;
           pcl::PointXYZ p2 = key_cloud.points[pointIdxNKNSearch[m]];
           pcl::PointXYZ p3 = key_cloud.points[pointIdxNKNSearch[n]];
@@ -1447,7 +1355,8 @@ void BtcDescManager::generate_btc(
               c > config_setting_.descriptor_max_len_ ||
               a < config_setting_.descriptor_min_len_ ||
               b < config_setting_.descriptor_min_len_ ||
-              c < config_setting_.descriptor_min_len_) {
+              c < config_setting_.descriptor_min_len_)
+          {
             continue;
           }
           double temp;
@@ -1457,7 +1366,8 @@ void BtcDescManager::generate_btc(
           l1 << 1, 2, 0;
           l2 << 1, 0, 3;
           l3 << 0, 2, 3;
-          if (a > b) {
+          if (a > b)
+          {
             temp = a;
             a = b;
             b = temp;
@@ -1465,7 +1375,8 @@ void BtcDescManager::generate_btc(
             l1 = l2;
             l2 = l_temp;
           }
-          if (b > c) {
+          if (b > c)
+          {
             temp = b;
             b = c;
             c = temp;
@@ -1473,7 +1384,8 @@ void BtcDescManager::generate_btc(
             l2 = l3;
             l3 = l_temp;
           }
-          if (a > b) {
+          if (a > b)
+          {
             temp = a;
             a = b;
             b = temp;
@@ -1481,7 +1393,8 @@ void BtcDescManager::generate_btc(
             l1 = l2;
             l2 = l_temp;
           }
-          if (fabs(c - (a + b)) < 0.2) {
+          if (fabs(c - (a + b)) < 0.2)
+          {
             continue;
           }
 
@@ -1495,34 +1408,50 @@ void BtcDescManager::generate_btc(
           BinaryDescriptor binary_A;
           BinaryDescriptor binary_B;
           BinaryDescriptor binary_C;
-          if (iter == feat_map.end()) {
-            if (l1[0] == l2[0]) {
+          if (iter == feat_map.end())
+          {
+            if (l1[0] == l2[0])
+            {
               A << p1.x, p1.y, p1.z;
               binary_A = binary_list[i];
-            } else if (l1[1] == l2[1]) {
+            }
+            else if (l1[1] == l2[1])
+            {
               A << p2.x, p2.y, p2.z;
               binary_A = binary_list[pointIdxNKNSearch[m]];
-            } else {
+            }
+            else
+            {
               A << p3.x, p3.y, p3.z;
               binary_A = binary_list[pointIdxNKNSearch[n]];
             }
-            if (l1[0] == l3[0]) {
+            if (l1[0] == l3[0])
+            {
               B << p1.x, p1.y, p1.z;
               binary_B = binary_list[i];
-            } else if (l1[1] == l3[1]) {
+            }
+            else if (l1[1] == l3[1])
+            {
               B << p2.x, p2.y, p2.z;
               binary_B = binary_list[pointIdxNKNSearch[m]];
-            } else {
+            }
+            else
+            {
               B << p3.x, p3.y, p3.z;
               binary_B = binary_list[pointIdxNKNSearch[n]];
             }
-            if (l2[0] == l3[0]) {
+            if (l2[0] == l3[0])
+            {
               C << p1.x, p1.y, p1.z;
               binary_C = binary_list[i];
-            } else if (l2[1] == l3[1]) {
+            }
+            else if (l2[1] == l3[1])
+            {
               C << p2.x, p2.y, p2.z;
               binary_C = binary_list[pointIdxNKNSearch[m]];
-            } else {
+            }
+            else
+            {
               C << p3.x, p3.y, p3.z;
               binary_C = binary_list[pointIdxNKNSearch[n]];
             }
@@ -1555,17 +1484,20 @@ void BtcDescManager::generate_btc(
 
 void BtcDescManager::candidate_selector(
     const std::vector<BTC> &current_STD_list,
-    std::vector<BTCMatchList> &candidate_matcher_vec) {
-  int current_frame_id = current_STD_list[0].frame_number_;
+    std::vector<BTCMatchList> &candidate_matcher_vec)
+{
   int outlier = 0;
   double max_dis = 50;
   double match_array[20000] = {0};
   std::vector<std::pair<BTC, BTC>> match_list;
   std::vector<int> match_list_index;
   std::vector<Eigen::Vector3i> voxel_round;
-  for (int x = -1; x <= 1; x++) {
-    for (int y = -1; y <= 1; y++) {
-      for (int z = -1; z <= 1; z++) {
+  for (int x = -1; x <= 1; x++)
+  {
+    for (int y = -1; y <= 1; y++)
+    {
+      for (int z = -1; z <= 1; z++)
+      {
         Eigen::Vector3i voxel_inc(x, y, z);
         voxel_round.push_back(voxel_inc);
       }
@@ -1576,7 +1508,8 @@ void BtcDescManager::candidate_selector(
   std::vector<std::vector<BTC_LOC>> useful_match_position(
       current_STD_list.size());
   std::vector<size_t> index(current_STD_list.size());
-  for (size_t i = 0; i < index.size(); ++i) {
+  for (size_t i = 0; i < index.size(); ++i)
+  {
     index[i] = i;
     useful_match[i] = false;
   }
@@ -1587,33 +1520,40 @@ void BtcDescManager::candidate_selector(
   int pass_num = 0;
   std::for_each(
       std::execution::par_unseq, index.begin(), index.end(),
-      [&](const size_t &i) {
+      [&](const size_t &i)
+      {
         BTC descriptor = current_STD_list[i];
         BTC_LOC position;
         int best_index = 0;
         BTC_LOC best_position;
         double dis_threshold =
             descriptor.triangle_.norm() *
-            config_setting_.rough_dis_threshold_;  // old 0.005
-        for (auto voxel_inc : voxel_round) {
+            config_setting_.rough_dis_threshold_; // old 0.005
+        for (auto voxel_inc : voxel_round)
+        {
           position.x = (int)(descriptor.triangle_[0] + voxel_inc[0]);
           position.y = (int)(descriptor.triangle_[1] + voxel_inc[1]);
           position.z = (int)(descriptor.triangle_[2] + voxel_inc[2]);
           Eigen::Vector3d voxel_center((double)position.x + 0.5,
                                        (double)position.y + 0.5,
                                        (double)position.z + 0.5);
-          if ((descriptor.triangle_ - voxel_center).norm() < 1.5) {
+          if ((descriptor.triangle_ - voxel_center).norm() < 1.5)
+          {
             auto iter = data_base_.find(position);
-            if (iter != data_base_.end()) {
+            if (iter != data_base_.end())
+            {
               bool is_push_position = false;
-              for (size_t j = 0; j < data_base_[position].size(); j++) {
+              for (size_t j = 0; j < data_base_[position].size(); j++)
+              {
                 if ((descriptor.frame_number_ -
                      data_base_[position][j].frame_number_) >
-                    config_setting_.skip_near_num_) {
+                    config_setting_.skip_near_num_)
+                {
                   double dis =
                       (descriptor.triangle_ - data_base_[position][j].triangle_)
                           .norm();
-                  if (dis < dis_threshold) {
+                  if (dis < dis_threshold)
+                  {
                     double similarity =
                         (binary_similarity(descriptor.binary_A_,
                                            data_base_[position][j].binary_A_) +
@@ -1622,7 +1562,8 @@ void BtcDescManager::candidate_selector(
                          binary_similarity(descriptor.binary_C_,
                                            data_base_[position][j].binary_C_)) /
                         3;
-                    if (similarity > config_setting_.similarity_threshold_) {
+                    if (similarity > config_setting_.similarity_threshold_)
+                    {
                       useful_match[i] = true;
                       useful_match_position[i].push_back(position);
                       useful_match_index[i].push_back(j);
@@ -1637,9 +1578,12 @@ void BtcDescManager::candidate_selector(
   std::vector<Eigen::Vector2i, Eigen::aligned_allocator<Eigen::Vector2i>>
       index_recorder;
   auto t1 = std::chrono::high_resolution_clock::now();
-  for (size_t i = 0; i < useful_match.size(); i++) {
-    if (useful_match[i]) {
-      for (size_t j = 0; j < useful_match_index[i].size(); j++) {
+  for (size_t i = 0; i < useful_match.size(); i++)
+  {
+    if (useful_match[i])
+    {
+      for (size_t j = 0; j < useful_match_index[i].size(); j++)
+      {
         match_array[data_base_[useful_match_position[i][j]]
                               [useful_match_index[i][j]]
                                   .frame_number_] += 1;
@@ -1653,14 +1597,18 @@ void BtcDescManager::candidate_selector(
     }
   }
   bool multi_thread_en = false;
-  if (multi_thread_en) {
+  if (multi_thread_en)
+  {
     std::for_each(
         std::execution::par_unseq, index.begin(), index.end(),
-        [&](const size_t &i) {
-          if (useful_match[i]) {
+        [&](const size_t &i)
+        {
+          if (useful_match[i])
+          {
             std::pair<BTC, BTC> single_match_pair;
             single_match_pair.first = current_STD_list[i];
-            for (size_t j = 0; j < useful_match_index[i].size(); j++) {
+            for (size_t j = 0; j < useful_match_index[i].size(); j++)
+            {
               single_match_pair.second = data_base_[useful_match_position[i][j]]
                                                    [useful_match_index[i][j]];
               mylock.lock();
@@ -1675,28 +1623,32 @@ void BtcDescManager::candidate_selector(
   }
 
   auto t2 = std::chrono::high_resolution_clock::now();
-  // std::cout << "prepare match list size: " << match_list_index.size()
-  //           << std::endl;
   // use index recorder
 
-  for (int cnt = 0; cnt < config_setting_.candidate_num_; cnt++) {
+  for (int cnt = 0; cnt < config_setting_.candidate_num_; cnt++)
+  {
     double max_vote = 1;
     int max_vote_index = -1;
-    for (int i = 0; i < 20000; i++) {
-      if (match_array[i] > max_vote) {
+    for (int i = 0; i < 20000; i++)
+    {
+      if (match_array[i] > max_vote)
+      {
         max_vote = match_array[i];
         max_vote_index = i;
       }
     }
     BTCMatchList match_triangle_list;
-    if (max_vote_index >= 0 && max_vote >= 5) {
+    if (max_vote_index >= 0 && max_vote >= 5)
+    {
       match_array[max_vote_index] = 0;
       match_triangle_list.match_frame_ = max_vote_index;
-      match_triangle_list.match_id_.first = current_frame_id;
+      match_triangle_list.match_id_.first = current_frame_id_;
       match_triangle_list.match_id_.second = max_vote_index;
       double mean_dis = 0;
-      for (size_t i = 0; i < index_recorder.size(); i++) {
-        if (match_list_index[i] == max_vote_index) {
+      for (size_t i = 0; i < index_recorder.size(); i++)
+      {
+        if (match_list_index[i] == max_vote_index)
+        {
           std::pair<BTC, BTC> single_match_pair;
           single_match_pair.first = current_STD_list[index_recorder[i][0]];
           single_match_pair.second =
@@ -1715,7 +1667,8 @@ void BtcDescManager::candidate_selector(
 void BtcDescManager::candidate_verify(
     const BTCMatchList &candidate_matcher, double &verify_score,
     std::pair<Eigen::Vector3d, Eigen::Matrix3d> &relative_pose,
-    std::vector<std::pair<BTC, BTC>> &sucess_match_list) {
+    std::vector<std::pair<BTC, BTC>> &sucess_match_list)
+{
   sucess_match_list.clear();
   double dis_threshold = 3;
   std::time_t solve_time = 0;
@@ -1724,20 +1677,23 @@ void BtcDescManager::candidate_verify(
   int use_size = candidate_matcher.match_list_.size() / skip_len;
   std::vector<size_t> index(use_size);
   std::vector<int> vote_list(use_size);
-  for (size_t i = 0; i < index.size(); i++) {
+  for (size_t i = 0; i < index.size(); i++)
+  {
     index[i] = i;
   }
   std::mutex mylock;
   auto t0 = std::chrono::high_resolution_clock::now();
   std::for_each(
       std::execution::par_unseq, index.begin(), index.end(),
-      [&](const size_t &i) {
+      [&](const size_t &i)
+      {
         auto single_pair = candidate_matcher.match_list_[i * skip_len];
         int vote = 0;
         Eigen::Matrix3d test_rot;
         Eigen::Vector3d test_t;
         triangle_solver(single_pair, test_t, test_rot);
-        for (size_t j = 0; j < candidate_matcher.match_list_.size(); j++) {
+        for (size_t j = 0; j < candidate_matcher.match_list_.size(); j++)
+        {
           auto verify_pair = candidate_matcher.match_list_[j];
           Eigen::Vector3d A = verify_pair.first.binary_A_.location_;
           Eigen::Vector3d A_transform = test_rot * A + test_t;
@@ -1752,7 +1708,8 @@ void BtcDescManager::candidate_verify(
           double dis_C =
               (C_transform - verify_pair.second.binary_C_.location_).norm();
           if (dis_A < dis_threshold && dis_B < dis_threshold &&
-              dis_C < dis_threshold) {
+              dis_C < dis_threshold)
+          {
             vote++;
           }
         }
@@ -1763,14 +1720,17 @@ void BtcDescManager::candidate_verify(
 
   int max_vote_index = 0;
   int max_vote = 0;
-  for (size_t i = 0; i < vote_list.size(); i++) {
-    if (max_vote < vote_list[i]) {
+  for (size_t i = 0; i < vote_list.size(); i++)
+  {
+    if (max_vote < vote_list[i])
+    {
       max_vote_index = i;
       max_vote = vote_list[i];
     }
   }
   // old 4
-  if (max_vote >= 4) {
+  if (max_vote >= 4)
+  {
     auto best_pair = candidate_matcher.match_list_[max_vote_index * skip_len];
     int vote = 0;
     Eigen::Matrix3d best_rot;
@@ -1778,7 +1738,8 @@ void BtcDescManager::candidate_verify(
     triangle_solver(best_pair, best_t, best_rot);
     relative_pose.first = best_t;
     relative_pose.second = best_rot;
-    for (size_t j = 0; j < candidate_matcher.match_list_.size(); j++) {
+    for (size_t j = 0; j < candidate_matcher.match_list_.size(); j++)
+    {
       auto verify_pair = candidate_matcher.match_list_[j];
       Eigen::Vector3d A = verify_pair.first.binary_A_.location_;
       Eigen::Vector3d A_transform = best_rot * A + best_t;
@@ -1793,21 +1754,25 @@ void BtcDescManager::candidate_verify(
       double dis_C =
           (C_transform - verify_pair.second.binary_C_.location_).norm();
       if (dis_A < dis_threshold && dis_B < dis_threshold &&
-          dis_C < dis_threshold) {
+          dis_C < dis_threshold)
+      {
         sucess_match_list.push_back(verify_pair);
       }
     }
     verify_score = plane_geometric_verify(
         plane_cloud_vec_.back(),
         plane_cloud_vec_[candidate_matcher.match_id_.second], relative_pose);
-  } else {
+  }
+  else
+  {
     verify_score = -1;
   }
   return;
 }
 
 void BtcDescManager::triangle_solver(std::pair<BTC, BTC> &std_pair,
-                                     Eigen::Vector3d &t, Eigen::Matrix3d &rot) {
+                                     Eigen::Vector3d &t, Eigen::Matrix3d &rot)
+{
   Eigen::Matrix3d src = Eigen::Matrix3d::Zero();
   Eigen::Matrix3d ref = Eigen::Matrix3d::Zero();
   src.col(0) = std_pair.first.binary_A_.location_ - std_pair.first.center_;
@@ -1822,7 +1787,8 @@ void BtcDescManager::triangle_solver(std::pair<BTC, BTC> &std_pair,
   Eigen::Matrix3d V = svd.matrixV();
   Eigen::Matrix3d U = svd.matrixU();
   rot = V * U.transpose();
-  if (rot.determinant() < 0) {
+  if (rot.determinant() < 0)
+  {
     Eigen::Matrix3d K;
     K << 1, 0, 0, 0, 1, 0, 0, 0, -1;
     rot = V * K * U.transpose();
@@ -1833,14 +1799,16 @@ void BtcDescManager::triangle_solver(std::pair<BTC, BTC> &std_pair,
 double BtcDescManager::plane_geometric_verify(
     const pcl::PointCloud<pcl::PointXYZINormal>::Ptr &source_cloud,
     const pcl::PointCloud<pcl::PointXYZINormal>::Ptr &target_cloud,
-    const std::pair<Eigen::Vector3d, Eigen::Matrix3d> &transform) {
+    const std::pair<Eigen::Vector3d, Eigen::Matrix3d> &transform)
+{
   Eigen::Vector3d t = transform.first;
   Eigen::Matrix3d rot = transform.second;
   pcl::KdTreeFLANN<pcl::PointXYZ>::Ptr kd_tree(
       new pcl::KdTreeFLANN<pcl::PointXYZ>);
   pcl::PointCloud<pcl::PointXYZ>::Ptr input_cloud(
       new pcl::PointCloud<pcl::PointXYZ>);
-  for (size_t i = 0; i < target_cloud->size(); i++) {
+  for (size_t i = 0; i < target_cloud->size(); i++)
+  {
     pcl::PointXYZ pi;
     pi.x = target_cloud->points[i].x;
     pi.y = target_cloud->points[i].y;
@@ -1855,7 +1823,8 @@ double BtcDescManager::plane_geometric_verify(
   double useful_match = 0;
   double normal_threshold = config_setting_.normal_threshold_;
   double dis_threshold = config_setting_.dis_threshold_;
-  for (size_t i = 0; i < source_cloud->size(); i++) {
+  for (size_t i = 0; i < source_cloud->size(); i++)
+  {
     pcl::PointXYZINormal searchPoint = source_cloud->points[i];
     pcl::PointXYZ use_search_point;
     use_search_point.x = searchPoint.x;
@@ -1870,7 +1839,8 @@ double BtcDescManager::plane_geometric_verify(
                        searchPoint.normal_z);
     ni = rot * ni;
     if (kd_tree->nearestKSearch(use_search_point, 1, pointIdxNKNSearch,
-                                pointNKNSquaredDistance) > 0) {
+                                pointNKNSquaredDistance) > 0)
+    {
       pcl::PointXYZINormal nearstPoint =
           target_cloud->points[pointIdxNKNSearch[0]];
       Eigen::Vector3d tpi(nearstPoint.x, nearstPoint.y, nearstPoint.z);
@@ -1881,10 +1851,34 @@ double BtcDescManager::plane_geometric_verify(
       double point_to_plane = fabs(tni.transpose() * (pi - tpi));
       if ((normal_inc.norm() < normal_threshold ||
            normal_add.norm() < normal_threshold) &&
-          point_to_plane < dis_threshold) {
+          point_to_plane < dis_threshold)
+      {
         useful_match++;
       }
     }
   }
   return useful_match / source_cloud->size();
+}
+
+int BtcDescManager::ProcessNewScan(const std::vector<Eigen::Vector3d> &pcl)
+{
+  pcl::PointCloud<pcl::PointXYZI>::Ptr current_cloud = EigenToPCL(pcl);
+
+  std::vector<BTC> btc_vec;
+  this->GenerateSTDescs(current_cloud, btc_vec);
+
+  if (keyCloudInd > config_setting_.skip_near_num_)
+  {
+    this->SearchLoop(btc_vec);
+  }
+  this->AddSTDescs(btc_vec);
+  this->key_cloud_vec_.push_back((*current_cloud).makeShared());
+  keyCloudInd++;
+  return loop_match_ids_.size();
+}
+
+std::tuple<int, double, Eigen::Vector3d, Eigen::Matrix3d> BtcDescManager::GetClosureDataAtIdx(
+    int idx)
+{
+  return {loop_match_ids_[idx], loop_match_scores_[idx], loop_trs_[idx], loop_rots_[idx]};
 }
