@@ -32,7 +32,7 @@ from kiss_icp.voxelization import voxel_down_sample
 
 from pybind.btcdesc import BTCDesc
 from btcdesc.config import load_config
-from btcdesc.tools.pipeline_results import LocalMapPair, PipelineResults
+from btcdesc.tools.pipeline_results import PipelineResults
 from btcdesc.tools.progress_bar import get_progress_bar
 
 
@@ -64,15 +64,14 @@ class BTCDescPipeline:
         self.map_scan_indices = []
         self.map_scan_poses = []
         self.closures = []
-        self.pcds = []
 
         self.dataset_name = self._dataset.sequence_id
 
         self.gt_closure_indices = self._dataset.gt_closure_indices
 
-        self.closure_distance_thresholds = np.arange(1, 10, 0.5)
+        self.closure_distance_threshold = 10
         self.results = PipelineResults(
-            self.gt_closure_indices, self.dataset_name, self.closure_distance_thresholds
+            self.gt_closure_indices, self.dataset_name, self.closure_distance_threshold
         )
 
     def run(self):
@@ -110,11 +109,8 @@ class BTCDescPipeline:
 
                 local_map = np.concatenate(temp_cloud)
                 num_matches = self.btc_desc.process_new_scan(local_map)
-                self.pcds.append(local_map)
                 for match_idx in range(num_matches):
-                    ref_idx, score, relative_tf = self.btc_desc.get_closure_data(
-                        match_idx
-                    )
+                    ref_idx, score, relative_tf = self.btc_desc.get_closure_data(match_idx)
                     if score > 0.6:
                         self.closures.append(
                             np.r_[
@@ -125,15 +121,17 @@ class BTCDescPipeline:
                                 np.linalg.inv(relative_tf).flatten(),
                             ]
                         )
-                    local_map_pairs = LocalMapPair(
+
+                    self.results.append(
                         self.map_scan_indices[ref_idx],
                         self.map_scan_indices[query_idx],
                         self.map_scan_poses[ref_idx],
                         self.map_scan_poses[query_idx],
                         relative_tf,
-                        self.closure_distance_thresholds,
+                        self.closure_distance_threshold,
+                        score,
                     )
-                    self.results.append(local_map_pairs._scan_level_closures, score)
+
                 temp_cloud.clear()
                 query_scan_indices.clear()
                 query_scan_poses.clear()
@@ -150,12 +148,9 @@ class BTCDescPipeline:
         self.results_dir = self._create_results_dir()
         if self.gt_closure_indices is not None:
             self.results.log_to_file_pr(os.path.join(self.results_dir, "metrics.txt"))
-        self.results.log_to_file_closures(self.results_dir)
 
     def _save_data(self):
-        np.savetxt(
-            os.path.join(self.results_dir, "closures.txt"), np.asarray(self.closures)
-        )
+        np.savetxt(os.path.join(self.results_dir, "closures.txt"), np.asarray(self.closures))
 
     def _create_results_dir(self) -> Path:
         def get_timestamp() -> str:
@@ -164,9 +159,7 @@ class BTCDescPipeline:
         results_dir = os.path.join(
             self.results_dir, "BTCDesc_results", self.dataset_name, get_timestamp()
         )
-        latest_dir = os.path.join(
-            self.results_dir, "BTCDesc_results", self.dataset_name, "latest"
-        )
+        latest_dir = os.path.join(self.results_dir, "BTCDesc_results", self.dataset_name, "latest")
         os.makedirs(results_dir, exist_ok=True)
         (
             os.unlink(latest_dir)
