@@ -41,9 +41,6 @@ ConfigSetting GetConfigFromYAML(const py::dict &yaml_cfg)
 {
     ConfigSetting config;
 
-    /* for point cloud pre-preocess*/
-    config.cloud_ds_size_ = yaml_cfg["cloud_ds_size"].cast<double>();
-
     // for binary descriptor
     config.useful_corner_num_ = yaml_cfg["useful_corner_num"].cast<int>();
     config.plane_merge_normal_thre_ = yaml_cfg["plane_merge_normal_thre"].cast<float>();
