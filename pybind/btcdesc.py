@@ -31,7 +31,7 @@ from . import btcdesc_pybind
 class BTCDesc:
     def __init__(self, config: BaseSettings):
         self._config = config
-        self._pipeline = btcdesc_pybind._BTCDescManager(self._config.model_dump())
+        self._pipeline = btcdesc_pybind._BtcDescManager(self._config.model_dump())
 
     def process_new_scan(self, scan: np.ndarray) -> Tuple[int, float]:
         scan = btcdesc_pybind._VectorEigen3d(scan)

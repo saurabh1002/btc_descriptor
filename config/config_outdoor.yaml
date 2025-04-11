@@ -1,5 +1,3 @@
-%YAML:1.0
-
 # binary descriptor
 useful_corner_num: 500  # Maximum number of useful corners
 plane_detection_thre: 0.01  # Threshold for plane detection
