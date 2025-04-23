@@ -1,7 +1,7 @@
 # MIT License
 #
-# Copyright (c) 2024 Saurabh Gupta, Ignacio Vizzo, Tiziano Guadagnino, Benedikt Mersch,
-# Cyrill Stachniss.
+# Copyright (c) 2024 Saurabh Gupta, Ignacio Vizzo, Tiziano Guadagnino,
+# Benedikt Mersch, Cyrill Stachniss.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -25,16 +25,18 @@ import os
 from pathlib import Path
 
 import numpy as np
+import open3d as o3d
 
 
-class MulranDataset:
+class IPBCarDataset:
     def __init__(self, data_dir: Path, *_, **__):
         self.sequence_id = os.path.basename(data_dir)
-        self.sequence_dir = os.path.realpath(data_dir)
-        self.velodyne_dir = os.path.join(self.sequence_dir, "Ouster/")
+        self.data_dir = os.path.realpath(data_dir)
+        self.sequence_dir = os.path.join(self.data_dir, "points")
+        self.scan_files = sorted(glob.glob(self.sequence_dir + "/*.ply"))
 
-        self.scan_files = sorted(glob.glob(self.velodyne_dir + "*.bin"))
-        self.scan_timestamps = [int(os.path.basename(t).split(".")[0]) for t in self.scan_files]
+        self.gt_file = os.path.join(self.data_dir, "poses.npy")
+        self.gt_poses = self.load_poses(self.gt_file)
 
         try:
             self.gt_closure_indices = np.loadtxt(
@@ -43,26 +45,32 @@ class MulranDataset:
             self.local_maps_scan_range = np.load(
                 os.path.join(self.sequence_dir, "MapClosures", "local_maps_scan_index_range.npy")
             )
+
         except FileNotFoundError:
             self.gt_closure_indices = None
             self.local_maps_scan_range = None
+
+        if len(self.scan_files) == 0:
+            raise ValueError(f"Tried to read point cloud files in {data_dir} but none found")
 
     def __len__(self):
         return len(self.scan_files)
 
     def __getitem__(self, idx):
-        return self.read_point_cloud(self.scan_files[idx])
+        return self.read_point_cloud(idx)
 
-    def read_point_cloud(self, file_path: str):
-        points = np.fromfile(file_path, dtype=np.float32).reshape((-1, 4))[:, :3]
-        timestamps = self.get_timestamps()
-        if points.shape[0] != timestamps.shape[0]:
-            # MuRan has some broken point clouds, just fallback to no timestamps
-            return points.astype(np.float64), np.ones(points.shape[0])
-        return points.astype(np.float64), timestamps
-    
-    @staticmethod
-    def get_timestamps():
-        H = 64
-        W = 1024
-        return (np.floor(np.arange(H * W) / H) / W).reshape(-1, 1)
+    def get_data(self, idx: int):
+        file_path = self.scan_files[idx]
+        pcd = o3d.io.read_point_cloud(file_path)
+        return np.asarray(pcd.points)
+
+    def read_point_cloud(self, idx: int):
+        data = self.get_data(idx)
+        points = data[:, :3]
+        return points.astype(np.float64)
+
+    def load_poses(self, poses_file):
+        poses = np.load(poses_file)
+        poses = np.linalg.inv(poses[0]) @ poses
+
+        return poses

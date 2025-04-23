@@ -1,6 +1,7 @@
 # MIT License
 #
-# Copyright (c) 2024 Saurabh Gupta, Benedikt Mersch
+# Copyright (c) 2024 Saurabh Gupta, Ignacio Vizzo, Tiziano Guadagnino,
+# Benedikt Mersch, Cyrill Stachniss.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -40,10 +41,15 @@ class HeLiPRDataset:
             raise ValueError(f"Tried to read point cloud files in {data_dir} but none found")
         try:
             self.gt_closure_indices = np.loadtxt(
-                os.path.join(self.sequence_dir, "loop_closure", "gt_closures.txt")
+                os.path.join(self.sequence_dir, "loop_closure", "local_map_gt_closures.txt")
             )
+            self.local_maps_scan_range = np.load(
+                os.path.join(self.sequence_dir, "MapClosures", "local_maps_scan_index_range.npy")
+            )
+
         except FileNotFoundError:
             self.gt_closure_indices = None
+            self.local_maps_scan_range = None
 
     def __len__(self):
         return len(self.scan_files)
