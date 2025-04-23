@@ -94,13 +94,18 @@ class BTCDescPipeline:
         query_idx = 0
 
         for i in get_progress_bar(self._first, self._last):
-            scan = self._dataset[i]
-            self._odometry.register_frame(scan, 0)
+            try:
+                frame, timestamps = self._dataset[i]
+            except ValueError:
+                frame = self._dataset[i]
+                timestamps = np.array([])
+
+            frame, _ = self._odometry.register_frame(frame, timestamps)
             pose = self._odometry.last_pose
             if start_pose_flag:
                 start_pose = np.copy(pose)
                 start_pose_flag = False
-            frame_downsample = voxel_down_sample(scan, 0.25)
+            frame_downsample = voxel_down_sample(frame, 0.25)
             delta_map_odom = np.linalg.inv(start_pose) @ pose
             temp_cloud.append(transform_points(frame_downsample, delta_map_odom))
             if ((i + 1) % self.config.sub_frame_num) == 0:
