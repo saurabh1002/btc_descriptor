@@ -112,7 +112,7 @@ class PipelineResults:
             fp = len(closures) - tp
             fn = len(self.gt_closures) - tp
             self.metrics.append(Metrics(tp, fp, fn))
-    
+
     def _rich_table_pr(self, table_format: box.Box = box.HORIZONTALS) -> Table:
         table = Table(box=table_format, title=self._dataset_name)
         table.add_column("BTC Threshold", justify="center", style="cyan")
