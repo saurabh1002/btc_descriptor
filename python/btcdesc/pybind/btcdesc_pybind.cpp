@@ -29,7 +29,7 @@
 #include <Eigen/Core>
 #include <vector>
 
-#include "btc.h"
+#include "btcdesc/BTCdesc.h"
 #include "stl_vector_eigen.h"
 
 PYBIND11_MAKE_OPAQUE(std::vector<Eigen::Vector3d>);

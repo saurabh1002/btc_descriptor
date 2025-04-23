@@ -30,7 +30,7 @@ from kiss_icp.config import KISSConfig
 from kiss_icp.kiss_icp import KissICP
 from kiss_icp.voxelization import voxel_down_sample
 
-from pybind.btcdesc import BTCDesc
+from btcdesc.btcdesc import BTCDesc
 from btcdesc.config import load_config
 from btcdesc.tools.pipeline_results import PipelineResults
 from btcdesc.tools.progress_bar import get_progress_bar

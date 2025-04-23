@@ -25,7 +25,7 @@ from typing import Tuple
 import numpy as np
 from pydantic_settings import BaseSettings
 
-from . import btcdesc_pybind
+from btcdesc.pybind import btcdesc_pybind
 
 
 class BTCDesc:
