@@ -58,7 +58,6 @@ void load_config_setting(std::string &config_file, ConfigSetting &config_setting
     std::cout << "Sucessfully load config file:" << config_file << std::endl;
 }
 
-
 inline pcl::PointXYZI vec2point(const Eigen::Vector3d &vec) {
     pcl::PointXYZI pi;
     pi.x = vec[0];
@@ -1345,32 +1344,33 @@ double BtcDescManager::plane_geometric_verify(
     double useful_match = 0;
     const double normal_threshold = config_setting_.normal_threshold_;
     const double dis_threshold = config_setting_.dis_threshold_;
-    std::for_each(
-        source_cloud->cbegin(), source_cloud->cend(), [&](const pcl::PointXYZINormal &searchPoint) {
-            Eigen::Vector3d pi = point2vec(searchPoint);
-            Eigen::Vector3d ni = normal2vec(searchPoint);
-            pi = rot * pi + t;
-            ni = rot * ni;
+    std::for_each(source_cloud->cbegin(), source_cloud->cend(),
+                  [&](const pcl::PointXYZINormal &searchPoint) {
+                      Eigen::Vector3d pi = point2vec(searchPoint);
+                      Eigen::Vector3d ni = normal2vec(searchPoint);
+                      pi = rot * pi + t;
+                      ni = rot * ni;
 
-            pcl::PointXYZ use_search_point;
-            use_search_point.x = pi[0];
-            use_search_point.y = pi[1];
-            use_search_point.z = pi[2];
-            if (kd_tree->nearestKSearch(use_search_point, 1, pointIdxNKNSearch,
-                                        pointNKNSquaredDistance) > 0) {
-                const pcl::PointXYZINormal nearestPoint = target_cloud->points[pointIdxNKNSearch[0]];
-                const Eigen::Vector3d tpi = point2vec(nearestPoint);
-                const Eigen::Vector3d tni = normal2vec(nearestPoint);
-                const Eigen::Vector3d normal_inc = ni - tni;
-                const Eigen::Vector3d normal_add = ni + tni;
-                const double point_to_plane = fabs(tni.transpose() * (pi - tpi));
-                if ((normal_inc.norm() < normal_threshold ||
-                     normal_add.norm() < normal_threshold) &&
-                    point_to_plane < dis_threshold) {
-                    useful_match++;
-                }
-            }
-        });
+                      pcl::PointXYZ use_search_point;
+                      use_search_point.x = pi[0];
+                      use_search_point.y = pi[1];
+                      use_search_point.z = pi[2];
+                      if (kd_tree->nearestKSearch(use_search_point, 1, pointIdxNKNSearch,
+                                                  pointNKNSquaredDistance) > 0) {
+                          const pcl::PointXYZINormal nearestPoint =
+                              target_cloud->points[pointIdxNKNSearch[0]];
+                          const Eigen::Vector3d tpi = point2vec(nearestPoint);
+                          const Eigen::Vector3d tni = normal2vec(nearestPoint);
+                          const Eigen::Vector3d normal_inc = ni - tni;
+                          const Eigen::Vector3d normal_add = ni + tni;
+                          const double point_to_plane = fabs(tni.transpose() * (pi - tpi));
+                          if ((normal_inc.norm() < normal_threshold ||
+                               normal_add.norm() < normal_threshold) &&
+                              point_to_plane < dis_threshold) {
+                              useful_match++;
+                          }
+                      }
+                  });
     return useful_match / source_cloud->size();
 }
 
