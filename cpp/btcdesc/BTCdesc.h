@@ -256,14 +256,14 @@ public:
 
     std::tuple<int, double, Eigen::Vector3d, Eigen::Matrix3d> GetClosureDataAtIdx(const int idx);
     // generate STDescs from a point cloud
-    void GenerateSTDescs(const pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud,
-                         std::vector<BTC> &btcs_vec);
+    void GenerateBTCDescs(const pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud,
+                          std::vector<BTC> &btcs_vec);
 
     // search result <candidate_id, plane icp score>. -1 for no loop
     void SearchLoop(const std::vector<BTC> &btcs_vec);
 
     // add descriptors to database
-    void AddSTDescs(const std::vector<BTC> &btcs_vec);
+    void AddBTCDescs(const std::vector<BTC> &btcs_vec);
 
 private:
     /*Following are sub-processing functions*/
@@ -281,7 +281,7 @@ private:
 
     void merge_plane(std::vector<Plane *> &origin_list, std::vector<Plane *> &merge_plane_list);
 
-    // extract corner points from pre-build voxel map and clouds
+    // extract corner points from pre-build voerrorxel map and clouds
 
     void binary_extractor(const std::vector<Plane *> proj_plane_list,
                           const pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud,

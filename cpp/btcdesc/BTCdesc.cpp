@@ -140,7 +140,7 @@ inline Eigen::Vector3d normal2vec(const pcl::PointXYZINormal &pi) {
     return Eigen::Vector3d(pi.normal_x, pi.normal_y, pi.normal_z);
 }
 
-void BtcDescManager::GenerateSTDescs(
+void BtcDescManager::GenerateBTCDescs(
     const pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud,
     std::vector<BTC> &btcs_vec) {  // step1, voxelization and plane dection
     std::unordered_map<VOXEL_LOC, OctoTree *> voxel_map;
@@ -203,7 +203,7 @@ void BtcDescManager::SearchLoop(const std::vector<BTC> &btcs_vec) {
     }
 }
 
-void BtcDescManager::AddSTDescs(const std::vector<BTC> &btcs_vec) {
+void BtcDescManager::AddBTCDescs(const std::vector<BTC> &btcs_vec) {
     // update frame id
     current_frame_id_++;
     std::for_each(btcs_vec.cbegin(), btcs_vec.cend(), [&](const auto &single_btc) {
@@ -1238,12 +1238,12 @@ int BtcDescManager::ProcessNewScan(const std::vector<Eigen::Vector3d> &pcl) {
     const pcl::PointCloud<pcl::PointXYZI>::Ptr current_cloud = EigenToPCL(pcl);
 
     std::vector<BTC> btc_vec;
-    this->GenerateSTDescs(current_cloud, btc_vec);
+    this->GenerateBTCDescs(current_cloud, btc_vec);
 
     if (keyCloudInd > config_setting_.skip_near_num_) {
         this->SearchLoop(btc_vec);
     }
-    this->AddSTDescs(btc_vec);
+    this->AddBTCDescs(btc_vec);
     keyCloudInd++;
     return loop_match_ids_.size();
 }
