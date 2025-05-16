@@ -92,6 +92,8 @@ PYBIND11_MODULE(btcdesc_pybind, m)
                  return BtcDescManager(config); }),
              "config"_a)
         .def("_ProcessNewScan", &BtcDescManager::ProcessNewScan, "pcl"_a)
+        .def("_AddToDatabase", &BtcDescManager::AddToDatabase, "pcl"_a)
+        .def("_ComputeClosure", &BtcDescManager::ComputeClosure, "pcl"_a)
         .def(
             "_GetClosureDataAtIdx",
             [](BtcDescManager &self, int idx)

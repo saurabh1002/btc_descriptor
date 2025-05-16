@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "omp.h"
+
 #define HASH_P 116101
 #define MAX_N 10000000000
 
@@ -253,6 +255,8 @@ public:
     /*Three main processing functions*/
 
     int ProcessNewScan(const std::vector<Eigen::Vector3d> &pcl);
+    void AddToDatabase(const std::vector<Eigen::Vector3d> &pcl);
+    int ComputeClosure(const std::vector<Eigen::Vector3d> &pcl);
 
     std::tuple<int, double, Eigen::Vector3d, Eigen::Matrix3d> GetClosureDataAtIdx(const int idx);
     // generate STDescs from a point cloud

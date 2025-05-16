@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 btcdesc_pipeline = "btcdesc.tools.cmd:run"
+btcdesc_multisession_pipeline = "btcdesc.tools.cmd:run_multisession"
 
 [tool.scikit-build]
 build-dir = "build/{wheel_tag}"

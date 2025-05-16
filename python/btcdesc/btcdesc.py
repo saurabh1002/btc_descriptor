@@ -38,6 +38,15 @@ class BTCDesc:
         num_matches = self._pipeline._ProcessNewScan(scan)
         return num_matches
 
+    def add_to_database(self, scan: np.ndarray):
+        scan = btcdesc_pybind._VectorEigen3d(scan)
+        num_matches = self._pipeline._AddToDatabase(scan)
+    
+    def compute_closures(self, scan: np.ndarray):
+        scan = btcdesc_pybind._VectorEigen3d(scan)
+        num_matches = self._pipeline._ComputeClosure(scan)
+        return num_matches
+
     def get_closure_data(self, idx: int) -> Tuple[int, float, np.ndarray]:
         match_idx, match_score, t, R = self._pipeline._GetClosureDataAtIdx(idx)
         T = np.eye(4)

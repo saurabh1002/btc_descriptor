@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "omp.h"
+
 pcl::PointCloud<pcl::PointXYZI>::Ptr EigenToPCL(const std::vector<Eigen::Vector3d> &pointcloud) {
     pcl::PointCloud<pcl::PointXYZI>::Ptr pcl(
         new pcl::PointCloud<pcl::PointXYZI>(pointcloud.size(), 1));
@@ -985,11 +987,12 @@ void BtcDescManager::candidate_selector(const std::vector<BTC> &current_STD_list
     std::vector<bool> useful_match(current_STD_list.size(), false);
     std::vector<std::vector<size_t>> useful_match_index(current_STD_list.size());
     std::vector<std::vector<BTC_LOC>> useful_match_position(current_STD_list.size());
-    std::vector<size_t> index(current_STD_list.size());
-    std::iota(index.begin(), index.end(), 0);
 
-    std::mutex mylock;
-    std::for_each(std::execution::par_unseq, index.cbegin(), index.cend(), [&](const size_t i) {
+#ifdef MP_EN
+    omp_set_num_threads(MP_PROC_NUM);
+#pragma omp parallel for
+#endif
+    for (size_t i = 0; i < current_STD_list.size(); i++) {
         const auto &descriptor = current_STD_list[i];
         BTC_LOC position;
         BTC_LOC best_position;
@@ -1029,7 +1032,7 @@ void BtcDescManager::candidate_selector(const std::vector<BTC> &current_STD_list
                 }
             }
         }
-    });
+    }
 
     double match_array[20000] = {0};
     std::vector<int> match_list_index;
@@ -1057,8 +1060,9 @@ void BtcDescManager::candidate_selector(const std::vector<BTC> &current_STD_list
                 max_vote_index = i;
             }
         }
-        BTCMatchList match_triangle_list;
         if (max_vote_index >= 0 && max_vote >= 5) {
+            BTCMatchList match_triangle_list;
+            match_triangle_list.match_list_.reserve(index_recorder.size());
             match_array[max_vote_index] = 0;
             match_triangle_list.match_frame_ = max_vote_index;
             match_triangle_list.match_id_.first = current_frame_id_;
@@ -1083,15 +1087,17 @@ void BtcDescManager::candidate_verify(const BTCMatchList &candidate_matcher,
                                       double &verify_score,
                                       std::pair<Eigen::Vector3d, Eigen::Matrix3d> &relative_pose,
                                       std::vector<std::pair<BTC, BTC>> &sucess_match_list) {
-    const double dis_threshold = 3;
+    const double dis_threshold = 3.0;
     const int skip_len = (int)(candidate_matcher.match_list_.size() / 50) + 1;
     const int use_size = candidate_matcher.match_list_.size() / skip_len;
-    std::vector<size_t> index(use_size);
-    std::iota(index.begin(), index.end(), 0);
     std::vector<int> vote_list(use_size);
-
     std::mutex mylock;
-    std::for_each(std::execution::par_unseq, index.cbegin(), index.cend(), [&](const size_t i) {
+
+#ifdef MP_EN
+    omp_set_num_threads(MP_PROC_NUM);
+#pragma omp parallel for
+#endif
+    for (size_t i = 0; i < use_size; i++) {
         const auto &single_pair = candidate_matcher.match_list_[i * skip_len];
         int vote = 0;
         Eigen::Matrix3d test_rot;
@@ -1116,17 +1122,11 @@ void BtcDescManager::candidate_verify(const BTCMatchList &candidate_matcher,
         mylock.lock();
         vote_list[i] = vote;
         mylock.unlock();
-    });
-
-    int max_vote_index = 0;
-    int max_vote = 0;
-    for (size_t i = 0; i < vote_list.size(); i++) {
-        if (max_vote < vote_list[i]) {
-            max_vote_index = i;
-            max_vote = vote_list[i];
-        }
     }
-    // old 4
+
+    const auto max_vote_iter = std::max_element(vote_list.cbegin(), vote_list.cend());
+    int max_vote_index = std::distance(vote_list.cbegin(), max_vote_iter);
+    int max_vote = *max_vote_iter;
     if (max_vote >= 4) {
         const auto &best_pair = candidate_matcher.match_list_[max_vote_index * skip_len];
         Eigen::Matrix3d best_rot;
@@ -1245,6 +1245,24 @@ int BtcDescManager::ProcessNewScan(const std::vector<Eigen::Vector3d> &pcl) {
     }
     this->AddBTCDescs(btc_vec);
     keyCloudInd++;
+    return loop_match_ids_.size();
+}
+
+void BtcDescManager::AddToDatabase(const std::vector<Eigen::Vector3d> &pcl) {
+    pcl::PointCloud<pcl::PointXYZI>::Ptr current_cloud = EigenToPCL(pcl);
+
+    std::vector<BTC> btc_vec;
+    this->GenerateBTCDescs(current_cloud, btc_vec);
+    this->AddBTCDescs(btc_vec);
+    keyCloudInd++;
+}
+
+int BtcDescManager::ComputeClosure(const std::vector<Eigen::Vector3d> &pcl) {
+    pcl::PointCloud<pcl::PointXYZI>::Ptr current_cloud = EigenToPCL(pcl);
+
+    std::vector<BTC> btc_vec;
+    this->GenerateBTCDescs(current_cloud, btc_vec);
+    this->SearchLoop(btc_vec);
     return loop_match_ids_.size();
 }
 
