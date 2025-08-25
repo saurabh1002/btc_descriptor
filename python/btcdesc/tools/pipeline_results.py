@@ -19,11 +19,9 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-import os
-from typing import Dict, List, Set, Tuple
+from typing import List, Set, Tuple
 
 import numpy as np
-from numpy.linalg import inv, norm
 from rich import box
 from rich.console import Console
 from rich.table import Table
@@ -52,34 +50,6 @@ class Metrics:
 
     def __call__(self):
         return np.r_[self.tp, self.fp, self.fn, self.precision, self.recall, self.F1]
-
-
-def compute_closure_indices(
-    ref_indices: np.ndarray,
-    query_indices: np.ndarray,
-    ref_scan_poses: np.ndarray,
-    query_scan_poses: np.ndarray,
-    relative_tf: np.ndarray,
-    closure_distance_threshold: float,
-):
-    T_query_world = inv(query_scan_poses[0])
-    T_ref_world = inv(ref_scan_poses[0])
-
-    # bring all poses to a common frame at the query map
-    query_locs = (relative_tf @ T_query_world @ query_scan_poses)[:, :3, -1].squeeze()
-    ref_locs = (T_ref_world @ ref_scan_poses)[:, :3, -1].squeeze()
-
-    closure_indices = []
-    closure_distances = []
-    query_id_start = query_indices[0]
-    ref_id_start = ref_indices[0]
-    qq, rr = np.meshgrid(query_indices, ref_indices)
-    distances = norm(query_locs[qq - query_id_start] - ref_locs[rr - ref_id_start], axis=2)
-    ids = np.where(distances < closure_distance_threshold)
-    for r_id, q_id, distance in zip(ids[0] + ref_id_start, ids[1] + query_id_start, distances[ids]):
-        closure_indices.append((r_id, q_id))
-        closure_distances.append(distance)
-    return np.asarray(closure_indices, int), np.asarray(closure_distances)
 
 
 class PipelineResults:
