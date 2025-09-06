@@ -1,5 +1,5 @@
 # binary descriptor
-useful_corner_num: 500  # Maximum number of useful corners
+useful_corner_num: 5000  # Maximum number of useful corners
 plane_detection_thre: 0.01  # Threshold for plane detection
 plane_merge_normal_thre: 0.1 # Normal threshold for plane merging
 plane_merge_dis_thre: 0.3   # Distance threshold for plane merging
@@ -21,7 +21,7 @@ max_constrait_dis: 2     # Neighborhood range for non-maximum suppression
 triangle_resolution: 0.2  # Edge length amplification coefficient
 
 # candidate search
-skip_near_num: 100  # Number of frames to skip
+skip_near_num: 3  # Number of frames to skip
 candidate_num: 50   # Maximum number of reference frames
 similarity_threshold: 0.7  # BTC similarity coefficient
 rough_dis_threshold: 0.01   # Threshold coefficient for BTC edge length distance
