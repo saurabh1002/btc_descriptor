@@ -37,4 +37,3 @@ endif()
 include(cmake/CompilerOptions.cmake)
 
 add_subdirectory(btcdesc)
-
