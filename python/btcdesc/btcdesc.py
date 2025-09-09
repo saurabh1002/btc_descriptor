@@ -41,7 +41,7 @@ class BTCDesc:
     def add_to_database(self, scan: np.ndarray):
         scan = btcdesc_pybind._VectorEigen3d(scan)
         num_matches = self._pipeline._AddToDatabase(scan)
-    
+
     def compute_closures(self, scan: np.ndarray):
         scan = btcdesc_pybind._VectorEigen3d(scan)
         num_matches = self._pipeline._ComputeClosure(scan)

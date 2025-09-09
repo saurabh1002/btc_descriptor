@@ -37,8 +37,7 @@ PYBIND11_MAKE_OPAQUE(std::vector<Eigen::Vector3d>);
 namespace py = pybind11;
 using namespace py::literals;
 
-ConfigSetting GetConfigFromYAML(const py::dict &yaml_cfg)
-{
+ConfigSetting GetConfigFromYAML(const py::dict &yaml_cfg) {
     ConfigSetting config;
 
     // for binary descriptor
@@ -76,8 +75,7 @@ ConfigSetting GetConfigFromYAML(const py::dict &yaml_cfg)
     return config;
 }
 
-PYBIND11_MODULE(btcdesc_pybind, m)
-{
+PYBIND11_MODULE(btcdesc_pybind, m) {
     auto vector3dvector = pybind_eigen_vector_of_vector<Eigen::Vector3d>(
         m, "_VectorEigen3d", "std::vector<Eigen::Vector3d>",
         py::py_array_to_vectors_double<Eigen::Vector3d>);
@@ -86,16 +84,15 @@ PYBIND11_MODULE(btcdesc_pybind, m)
 
     py::class_<BtcDescManager> btcdesc(m, "_BtcDescManager", "");
     btcdesc
-        .def(py::init([](const py::dict &cfg)
-                      {
+        .def(py::init([](const py::dict &cfg) {
                  auto config = GetConfigFromYAML(cfg);
-                 return BtcDescManager(config); }),
+                 return BtcDescManager(config);
+             }),
              "config"_a)
         .def("_ProcessNewScan", &BtcDescManager::ProcessNewScan, "pcl"_a)
         .def("_AddToDatabase", &BtcDescManager::AddToDatabase, "pcl"_a)
         .def("_ComputeClosure", &BtcDescManager::ComputeClosure, "pcl"_a)
         .def(
             "_GetClosureDataAtIdx",
-            [](BtcDescManager &self, int idx)
-            { return self.GetClosureDataAtIdx(idx); }, "idx"_a);
+            [](BtcDescManager &self, int idx) { return self.GetClosureDataAtIdx(idx); }, "idx"_a);
 }

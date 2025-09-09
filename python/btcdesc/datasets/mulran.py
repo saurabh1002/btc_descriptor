@@ -46,7 +46,7 @@ class MulranDataset:
             self.kiss_poses = np.load(
                 os.path.join(self.sequence_dir, "MapClosures", "kiss_poses.npy")
             )
-            
+
         except FileNotFoundError:
             self.gt_closure_indices = None
             self.local_maps_scan_range = None
